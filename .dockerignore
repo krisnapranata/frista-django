@@ -1,0 +1,16 @@
+.env
+.git
+.gitignore
+.cache
+.claude
+venv
+.venv
+data
+staticfiles
+frista.log*
+__pycache__
+*.pyc
+android-example
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -1,0 +1,12 @@
+services:
+  frista:
+    build: .
+    image: frista-django
+    container_name: frista-django
+    env_file: .env
+    ports:
+      - "8010:8010"
+    volumes:
+      # cache sesi/token dan frista.log tetap ada walau container dibuat ulang
+      - ./data:/app/data
+    restart: unless-stopped

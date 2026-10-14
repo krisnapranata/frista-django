@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Verifikasi Wajah</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0f1720; --panel: #17212c; --text: #eef3f7; --muted: #9fb0bf;
+    --ok: #2fbf71; --warn: #f2b33d; --err: #ef5a5a; --accent: #3aa0ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 16px; gap: 16px; -webkit-user-select: none; user-select: none; }
+  h1 { font-size: clamp(20px, 3.4vw, 30px); margin: 0; text-align: center; }
+  .sub { color: var(--muted); font-size: clamp(14px, 2.2vw, 18px); text-align: center; margin: 0; }
+  .stage { position: relative; width: min(92vw, 560px); aspect-ratio: 3 / 4;
+    border-radius: 24px; overflow: hidden; background: #000; }
+  @media (orientation: landscape) { .stage { width: min(60vh, 520px); } }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1); }
+  .guide { position: absolute; inset: 12% 16%; border: 4px dashed rgba(255,255,255,.55);
+    border-radius: 50%; transition: border-color .2s; pointer-events: none; }
+  .guide.ready { border-style: solid; border-color: var(--ok); }
+  .status { width: min(92vw, 560px); background: var(--panel); border-radius: 16px;
+    padding: 16px 20px; font-size: clamp(16px, 2.6vw, 22px); text-align: center; min-height: 64px;
+    display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .status.ok { background: color-mix(in srgb, var(--ok) 22%, var(--panel)); }
+  .status.warn { background: color-mix(in srgb, var(--warn) 22%, var(--panel)); }
+  .status.err { background: color-mix(in srgb, var(--err) 22%, var(--panel)); }
+  .spinner { width: 20px; height: 20px; border: 3px solid rgba(255,255,255,.25);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .attempts { color: var(--muted); font-size: 14px; }
+  button { font: inherit; font-size: 18px; padding: 12px 28px; border: 0; border-radius: 12px;
+    background: var(--accent); color: #fff; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+{% if error %}
+  <h1>Verifikasi tidak dapat dilanjutkan</h1>
+  <div class="status err">{{ error }}</div>
+  <script>
+    (function () {
+      var r = { status: "SESSION_INVALID", message: "{{ error|escapejs }}", final: true };
+      try { if (window.AndroidFrista && window.AndroidFrista.onResult) window.AndroidFrista.onResult(JSON.stringify(r)); } catch (e) {}
+      try { if (window.parent !== window) window.parent.postMessage({ source: "frista", result: r }, "*"); } catch (e) {}
+    })();
+  </script>
+{% else %}
+  <h1>Verifikasi Wajah Peserta JKN</h1>
+  <p class="sub">Peserta: {{ member_id_masked }} &middot; Lepas masker/kacamata gelap, posisikan wajah di dalam lingkaran</p>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay muted playsinline></video>
+    <div class="guide" id="guide"></div>
+  </div>
+
+  <div class="status" id="status"><span class="spinner"></span><span id="statusText">Menyiapkan kamera…</span></div>
+  <div class="attempts" id="attempts"></div>
+  <button id="retryBtn" class="hidden" type="button">Coba lagi</button>
+
+  {{ cfg|json_script:"frista-cfg" }}
+  <script>window.FRISTA_TOKEN = "{{ token|escapejs }}";</script>
+  <script src="{{ faceapi_script }}"></script>
+  <script>
+  (function () {
+    "use strict";
+    var CFG = JSON.parse(document.getElementById("frista-cfg").textContent);
+    var TOKEN = window.FRISTA_TOKEN;
+    var video = document.getElementById("video");
+    var guide = document.getElementById("guide");
+    var statusBox = document.getElementById("status");
+    var statusText = document.getElementById("statusText");
+    var attemptsEl = document.getElementById("attempts");
+    var retryBtn = document.getElementById("retryBtn");
+
+    var stream = null, running = false, busy = false, stable = 0, finished = false;
+
+    function setStatus(text, kind, spin) {
+      statusText.textContent = text;
+      statusBox.className = "status" + (kind ? " " + kind : "");
+      var sp = statusBox.querySelector(".spinner");
+      if (spin && !sp) { sp = document.createElement("span"); sp.className = "spinner"; statusBox.prepend(sp); }
+      if (!spin && sp) sp.remove();
+    }
+
+    // Kirim hasil ke aplikasi APM (Android WebView bridge / iframe parent)
+    function notify(result) {
+      try { if (window.AndroidFrista && window.AndroidFrista.onResult) window.AndroidFrista.onResult(JSON.stringify(result)); } catch (e) {}
+      try { if (window.parent !== window) window.parent.postMessage({ source: "frista", result: result }, "*"); } catch (e) {}
+    }
+
+    function stopCamera() {
+      running = false;
+      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    }
+
+    function finish(result, text, kind) {
+      finished = true;
+      stopCamera();
+      setStatus(text, kind, false);
+      notify(result);
+    }
+
+    async function init() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        finish({ status: "CAMERA_UNAVAILABLE", message: "Kamera tidak tersedia (halaman harus dibuka lewat HTTPS)", final: true },
+               "Kamera tidak tersedia. Halaman harus dibuka lewat HTTPS.", "err");
+        return;
+      }
+      try {
+        setStatus("Memuat model pengenalan wajah…", "", true);
+        await faceapi.nets.ssdMobilenetv1.loadFromUri(CFG.modelUrl);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(CFG.modelUrl);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(CFG.modelUrl);
+
+        setStatus("Membuka kamera…", "", true);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
+        });
+        video.srcObject = stream;
+        await new Promise(function (res) { video.onloadedmetadata = res; });
+        await video.play();
+        startLoop();
+      } catch (e) {
+        finish({ status: "CAMERA_ERROR", message: String(e && e.message || e), final: true },
+               "Gagal membuka kamera: " + (e && e.message || e), "err");
+      }
+    }
+
+    function startLoop() {
+      running = true; stable = 0;
+      retryBtn.classList.add("hidden");
+      setStatus("Lihat ke kamera dan diam sejenak…", "", true);
+      loop();
+    }
+
+    async function loop() {
+      if (!running || finished) return;
+      if (!busy) {
+        try {
+          var det = await faceapi
+            .detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 }))
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+          if (det && goodFrame(det)) {
+            stable++;
+            guide.classList.add("ready");
+            if (stable >= CFG.stableFrames) { await send(det.descriptor); }
+          } else {
+            stable = 0;
+            guide.classList.remove("ready");
+          }
+        } catch (e) { stable = 0; }
+      }
+      if (running && !finished) setTimeout(loop, 250);
+    }
+
+    // Wajah cukup besar, cukup jelas, dan berada di tengah
+    function goodFrame(det) {
+      var box = det.detection.box, vw = video.videoWidth, vh = video.videoHeight;
+      if (det.detection.score < CFG.minScore) { hint("Wajah kurang jelas, pastikan cahaya cukup"); return false; }
+      if (box.width < vw * 0.22) { hint("Mendekatlah ke kamera"); return false; }
+      var cx = (box.x + box.width / 2) / vw, cy = (box.y + box.height / 2) / vh;
+      if (Math.abs(cx - 0.5) > 0.2 || Math.abs(cy - 0.5) > 0.22) { hint("Posisikan wajah di tengah lingkaran"); return false; }
+      hint("Tahan posisi…");
+      return true;
+    }
+    var lastHint = "";
+    function hint(t) { if (t !== lastHint && !busy) { lastHint = t; setStatus(t, "", true); } }
+
+    async function send(descriptor) {
+      busy = true; running = false;
+      setStatus("Memverifikasi data peserta…", "", true);
+      var res, data;
+      try {
+        res = await fetch(CFG.verifyUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ t: TOKEN, encoding: Array.from(descriptor) })
+        });
+        data = await res.json();
+      } catch (e) {
+        data = { status: "NETWORK_ERROR", message: "Tidak dapat terhubung ke server APM", final: false };
+      }
+      busy = false;
+      if (data.attempt) attemptsEl.textContent = "Percobaan " + data.attempt + " dari " + data.max_attempts;
+      handle(data);
+    }
+
+    function handle(r) {
+      switch (r.status) {
+        case "OK":
+          finish(r, "Verifikasi berhasil" + (r.data && r.data.nama ? ": " + r.data.nama : ""), "ok"); break;
+        case "ALREADY_REGISTERED":
+          finish(r, "Peserta sudah terverifikasi hari ini", "ok"); break;
+        case "UNREGISTERED":
+          finish(r, "Wajah Anda belum terdaftar. Silakan ke loket petugas.", "warn"); break;
+        case "FACE_MISMATCH":
+        case "FACE_UNPROCESSABLE":
+        case "DUPLICATE_PHOTO":
+        case "NETWORK_ERROR":
+          if (r.final) { finish(r, "Verifikasi gagal. Silakan ke loket petugas.", "err"); }
+          else { setStatus(r.message || "Wajah tidak cocok, coba lagi", "warn", false); retryBtn.classList.remove("hidden"); setTimeout(function () { if (!finished && !running) startLoop(); }, 2500); }
+          break;
+        default:
+          finish(r, (r.message || "Terjadi kesalahan") + ". Silakan ke loket petugas.", "err");
+      }
+    }
+
+    retryBtn.addEventListener("click", function () { if (!finished && !running) startLoop(); });
+    window.addEventListener("pagehide", stopCamera);
+
+    {% if already_done %}
+      finish({ status: "ALREADY_REGISTERED", message: "Sesi ini sudah terverifikasi", final: true }, "Sesi ini sudah terverifikasi", "ok");
+    {% else %}
+      init();
+    {% endif %}
+  })();
+  </script>
+{% endif %}
+</body>
+</html>

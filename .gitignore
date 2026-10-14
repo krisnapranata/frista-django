@@ -1,0 +1,10 @@
+.env
+.cache/
+staticfiles/
+frista.log*
+__pycache__/
+*.pyc
+venv/
+.venv/
+.claude/
+data/
