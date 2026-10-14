@@ -84,20 +84,156 @@ gunicorn config.wsgi -b 127.0.0.1:8000 -w 3
 Buat `DJANGO_SECRET_KEY`, `APM_API_KEY`, dan `ADMIN_API_KEY` dengan string acak, misalnya:
 `python -c "import secrets; print(secrets.token_urlsafe(40))"`.
 
-## Docker
+## Instalasi dengan Docker (server production)
 
-Container berjalan di port **8010** dengan gunicorn. Cache sesi/token dan `frista.log`
-disimpan di folder `./data`.
+Container menjalankan gunicorn di port **8010** sebagai user **uid 1000**. Cache sesi/token
+dan `frista.log` disimpan di folder `./data` (di-mount ke `/app/data`). Port 8010 hanya HTTP,
+jadi tetap butuh reverse proxy HTTPS di depannya.
+
+### 1. Prasyarat
+
+- Docker dan Docker Compose **2.24 atau lebih baru** (`docker compose version`)
+- Server bisa mengakses `https://frista.bpjs-kesehatan.go.id` (cek: `getent hosts frista.bpjs-kesehatan.go.id`)
+- Domain yang mengarah ke server, dan reverse proxy HTTPS (Nginx Proxy Manager, nginx, atau Caddy)
+- Akun VClaim faskes
+
+### 2. Ambil kode
 
 ```bash
-cp .env.example .env              # lalu isi .env
-docker compose up -d --build
-docker compose exec frista python manage.py frista_check --nik 3212xxxxxxxxxxxx
-docker compose logs -f
+sudo mkdir -p /srv && cd /srv
+sudo git clone https://github.com/krisnapranata/frista-django.git
+sudo chown -R $USER: frista-django
+cd frista-django
 ```
 
-Port 8010 hanya HTTP. Untuk APM tetap pasang nginx/Caddy dengan HTTPS di depannya
-(lihat bagian berikut), dengan `proxy_pass http://127.0.0.1:8010;`.
+### 3. Folder data (WAJIB)
+
+```bash
+mkdir -p data
+sudo chown -R 1000:1000 data
+```
+
+> Container berjalan sebagai uid 1000. Kalau folder `data` milik user lain, `frista.log`
+> tidak bisa ditulis, gunicorn langsung berhenti, dan container terus `Restarting (1)`.
+
+### 4. Isi `.env`
+
+```bash
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_urlsafe(40))"   # jalankan 3x untuk 3 kunci
+nano .env
+```
+
+Yang wajib diisi/diubah (ganti `frista.domain-anda.id` dengan domain Anda):
+
+```ini
+DJANGO_SECRET_KEY=<kunci acak 1>
+DJANGO_DEBUG=false
+DJANGO_ALLOWED_HOSTS=frista.domain-anda.id,localhost
+DJANGO_CSRF_TRUSTED_ORIGINS=https://frista.domain-anda.id
+
+FRISTA_USERNAME=<username VClaim>
+FRISTA_PASSWORD=<password VClaim>
+
+APM_API_KEY=<kunci acak 2>       # diisi di Pengaturan aplikasi APM
+ADMIN_API_KEY=<kunci acak 3>     # hanya untuk petugas/SIMRS, jangan di APK
+```
+
+`localhost` di `DJANGO_ALLOWED_HOSTS` dipakai oleh healthcheck container, jangan dihapus.
+
+### 5. Hubungkan ke reverse proxy
+
+**Nginx Proxy Manager (NPM) yang berjalan di Docker, di server yang sama.** Container
+FRISTA digabung ke jaringan Docker NPM, dan port 8010 tidak dibuka ke luar. Cari nama
+jaringan NPM terlebih dahulu:
+
+```bash
+docker ps --format '{{.Names}}  {{.Image}}' | grep -i proxy-manager
+docker inspect <nama_container_npm> -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+Lalu buat `docker-compose.override.yml`. File ini otomatis dibaca oleh `docker compose`
+dan tidak ikut ke git. Ganti `proxy_default` dengan nama jaringan dari perintah di atas:
+
+```yaml
+services:
+  frista:
+    ports: !reset []          # port 8010 tidak dibuka ke host
+    networks: [default, npm]
+networks:
+  npm:
+    external: true
+    name: proxy_default
+```
+
+**nginx/Caddy langsung di host (bukan Docker).** Buka port hanya untuk localhost:
+
+```yaml
+services:
+  frista:
+    ports: !override ["127.0.0.1:8010:8010"]
+```
+
+### 6. Jalankan
+
+```bash
+docker compose up -d --build
+docker compose ps                     # tunggu sampai STATUS "Up ... (healthy)", sekitar 30 detik
+docker compose exec frista python manage.py frista_check
+```
+
+`frista_check` harus menampilkan `Login FRISTA berhasil`. Tambahkan `--nik <16 digit>` untuk
+sekaligus mencoba mencari data peserta.
+
+### 7. Buat proxy host
+
+**Nginx Proxy Manager** (panel di `http://<ip-server>:81`) → Hosts → Proxy Hosts → Add:
+
+| Tab | Isian |
+|---|---|
+| Details | Domain: `frista.domain-anda.id`; Scheme `http`; Forward Hostname `frista-django`; Port `8010`; aktifkan Block Common Exploits |
+| SSL | Request a new SSL Certificate (Let's Encrypt); aktifkan Force SSL dan HTTP/2 |
+| Advanced (disarankan) | `location /api/admin/ { deny all; }` supaya endpoint petugas tidak bisa diakses dari internet |
+
+NPM sudah mengirim header `Host` dan `X-Forwarded-Proto`. Untuk nginx biasa, lihat contoh di
+bagian [WAJIB HTTPS](#wajib-https) dengan `proxy_pass http://127.0.0.1:8010;`.
+
+### 8. Uji
+
+```bash
+curl https://frista.domain-anda.id/health            # {"status": "ok"}
+
+curl -X POST https://frista.domain-anda.id/api/sessions \
+  -H "X-APM-Key: <APM_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"member_id":"<NIK 16 digit>"}'
+```
+
+`capture_url` di respons harus diawali `https://`. Buka link itu di HP/tablet, izinkan kamera,
+lalu hadapkan wajah. Kalau perangkat punya lebih dari satu kamera, ada tombol **Ganti Kamera**.
+
+### 9. Update ke versi terbaru
+
+```bash
+cd /srv/frista-django
+git pull
+docker compose up -d --build
+```
+
+`.env`, `data/`, dan `docker-compose.override.yml` tidak tersentuh oleh `git pull`.
+
+### Troubleshooting
+
+Lihat log dulu: `docker compose logs --tail 60 frista`
+
+| Gejala | Penyebab | Perbaikan |
+|---|---|---|
+| `Restarting (1)`, log berisi `PermissionError` atau `Unable to configure handler 'file'` | Folder `data` tidak ada atau bukan milik uid 1000 | `mkdir -p data && sudo chown -R 1000:1000 data && docker compose up -d` |
+| `Restarting (1)`, log berisi `SECRET_KEY setting must not be empty` | `.env` tidak ada atau `DJANGO_SECRET_KEY` kosong | Isi `.env` (langkah 4), lalu `docker compose up -d` |
+| Status `(unhealthy)`, log berisi `DisallowedHost` | `localhost` atau domain tidak ada di `DJANGO_ALLOWED_HOSTS` | Tambahkan, lalu `docker compose up -d` |
+| Proxy menampilkan 502 Bad Gateway | Container belum jalan, atau tidak satu jaringan dengan NPM | Cek `docker compose ps` dan nama jaringan di override |
+| `capture_url` diawali `http://`, kamera ditolak di tablet | Proxy tidak mengirim `X-Forwarded-Proto https` | Aktifkan SSL/Force SSL di NPM, atau tambahkan header di nginx |
+| `frista_check`: tidak dapat menghubungi server FRISTA | DNS/firewall server tidak bisa ke BPJS | Cek `getent hosts frista.bpjs-kesehatan.go.id` dan akses keluar port 443 |
+| `frista_check`: login gagal | Username/password VClaim salah | Perbaiki `.env`, lalu `docker compose up -d` |
 
 ## WAJIB HTTPS
 
