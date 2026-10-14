@@ -22,7 +22,10 @@
   @media (orientation: landscape) { .stage { width: min(60vh, 520px); } }
   video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   /* Kamera depan ditampilkan seperti cermin; kamera belakang apa adanya */
-  video.mirror { transform: scaleX(-1); }
+  video.mirror, canvas.mirror { transform: scaleX(-1); }
+  video { background: #000; }
+  /* Gambar terakhir kamera lama, ditahan selama kamera berganti */
+  #freeze { filter: blur(6px) brightness(.7); }
   .guide { position: absolute; inset: 12% 16%; border: 4px dashed rgba(255,255,255,.55);
     border-radius: 50%; transition: border-color .2s; pointer-events: none; }
   .guide.ready { border-style: solid; border-color: var(--ok); }
@@ -60,7 +63,10 @@
   <p class="sub">Peserta: {{ member_id_masked }} &middot; Lepas masker/kacamata gelap, posisikan wajah di dalam lingkaran</p>
 
   <div class="stage" id="stage">
-    <video id="video" autoplay muted playsinline></video>
+    <!-- poster transparan: tanpa ini WebView Android menampilkan ikon putar/loading saat video belum punya gambar -->
+    <video id="video" autoplay muted playsinline
+           poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video>
+    <canvas id="freeze" class="hidden"></canvas>
     <div class="guide" id="guide"></div>
   </div>
 
@@ -86,6 +92,7 @@
     var attemptsEl = document.getElementById("attempts");
     var retryBtn = document.getElementById("retryBtn");
     var switchBtn = document.getElementById("switchBtn");
+    var freeze = document.getElementById("freeze");
 
     var stream = null, running = false, busy = false, stable = 0, finished = false, switching = false;
 
@@ -151,7 +158,28 @@
       video.srcObject = stream;
       await new Promise(function (res) { video.onloadedmetadata = res; });
       await video.play();
+      await firstFrame();
     }
+
+    // Tunggu sampai kamera benar-benar mengirim gambar, bukan sekadar metadata
+    function firstFrame() {
+      return new Promise(function (res) {
+        var done = false, t = setTimeout(finishWait, 1500);
+        function finishWait() { if (!done) { done = true; clearTimeout(t); res(); } }
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(finishWait);
+        else video.addEventListener("timeupdate", finishWait, { once: true });
+      });
+    }
+
+    // Bekukan gambar terakhir supaya layar tidak hitam/berkedip selama kamera berganti
+    function holdFrame() {
+      if (!video.videoWidth) return;
+      freeze.width = video.videoWidth; freeze.height = video.videoHeight;
+      freeze.getContext("2d").drawImage(video, 0, 0);
+      freeze.classList.toggle("mirror", video.classList.contains("mirror"));
+      freeze.classList.remove("hidden");
+    }
+    function releaseFrame() { freeze.classList.add("hidden"); }
 
     async function listCameras() {
       try {
@@ -173,6 +201,7 @@
       var idx = cams.findIndex(function (c) { return c.deviceId === deviceId; });
       var next = cams[(idx + 1) % cams.length];
       facing = facing === "user" ? "environment" : "user";   // dikoreksi oleh getSettings bila tersedia
+      holdFrame();
       try {
         setStatus("Mengganti kamera…", "", true);
         await openCamera(next ? next.deviceId : null);
@@ -185,6 +214,7 @@
         try { await openCamera(prevId); } catch (e2) {}
         setStatus("Kamera lain tidak dapat dibuka", "warn", false);
       }
+      releaseFrame();
       switching = false; switchBtn.disabled = false;
     }
 
