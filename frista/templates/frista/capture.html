@@ -20,8 +20,9 @@
   .stage { position: relative; width: min(92vw, 560px); aspect-ratio: 3 / 4;
     border-radius: 24px; overflow: hidden; background: #000; }
   @media (orientation: landscape) { .stage { width: min(60vh, 520px); } }
-  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-    transform: scaleX(-1); }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* Kamera depan ditampilkan seperti cermin; kamera belakang apa adanya */
+  video.mirror { transform: scaleX(-1); }
   .guide { position: absolute; inset: 12% 16%; border: 4px dashed rgba(255,255,255,.55);
     border-radius: 50%; transition: border-color .2s; pointer-events: none; }
   .guide.ready { border-style: solid; border-color: var(--ok); }
@@ -37,6 +38,9 @@
   .attempts { color: var(--muted); font-size: 14px; }
   button { font: inherit; font-size: 18px; padding: 12px 28px; border: 0; border-radius: 12px;
     background: var(--accent); color: #fff; }
+  button.secondary { background: var(--panel); border: 1px solid rgba(255,255,255,.25); }
+  button:disabled { opacity: .5; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -62,7 +66,10 @@
 
   <div class="status" id="status"><span class="spinner"></span><span id="statusText">Menyiapkan kamera…</span></div>
   <div class="attempts" id="attempts"></div>
-  <button id="retryBtn" class="hidden" type="button">Coba lagi</button>
+  <div class="actions">
+    <button id="switchBtn" class="secondary hidden" type="button">Ganti Kamera</button>
+    <button id="retryBtn" class="hidden" type="button">Coba lagi</button>
+  </div>
 
   {{ cfg|json_script:"frista-cfg" }}
   <script>window.FRISTA_TOKEN = "{{ token|escapejs }}";</script>
@@ -78,8 +85,23 @@
     var statusText = document.getElementById("statusText");
     var attemptsEl = document.getElementById("attempts");
     var retryBtn = document.getElementById("retryBtn");
+    var switchBtn = document.getElementById("switchBtn");
 
-    var stream = null, running = false, busy = false, stable = 0, finished = false;
+    var stream = null, running = false, busy = false, stable = 0, finished = false, switching = false;
+
+    // Kamera: "user" (depan) atau "environment" (belakang). Urutan prioritas:
+    // ?cam= di URL, pilihan terakhir di perangkat ini, lalu default depan.
+    // Kamera terakhir juga diingat lewat deviceId, karena sebagian kamera USB/tablet
+    // tidak melaporkan facingMode sehingga depan/belakang tidak bisa dipilih lewat itu.
+    var CAM_KEY = "frista_cam", CAM_ID_KEY = "frista_cam_id";
+    var camParam = new URLSearchParams(location.search).get("cam");
+    var facing = (function () {
+      if (camParam === "user" || camParam === "environment") return camParam;
+      try { var s = localStorage.getItem(CAM_KEY); if (s === "user" || s === "environment") return s; } catch (e) {}
+      return "user";
+    })();
+    var deviceId = null;
+    if (!camParam) { try { deviceId = localStorage.getItem(CAM_ID_KEY); } catch (e) {} }
 
     function setStatus(text, kind, spin) {
       statusText.textContent = text;
@@ -95,9 +117,75 @@
       try { if (window.parent !== window) window.parent.postMessage({ source: "frista", result: result }, "*"); } catch (e) {}
     }
 
+    function stopStream() {
+      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    }
+
     function stopCamera() {
       running = false;
-      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+      stopStream();
+      switchBtn.classList.add("hidden");
+    }
+
+    function videoConstraints(id) {
+      var v = { width: { ideal: 640 }, height: { ideal: 480 } };
+      // "ideal" supaya perangkat yang hanya punya satu kamera tetap bisa dipakai
+      if (id) v.deviceId = { exact: id }; else v.facingMode = { ideal: facing };
+      return { video: v, audio: false };
+    }
+
+    async function openCamera(id) {
+      stopStream();
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(videoConstraints(id));
+      } catch (e) {
+        if (!id) throw e;
+        // Kamera yang diingat sudah tidak ada (mis. dicabut): pakai facingMode
+        stream = await navigator.mediaDevices.getUserMedia(videoConstraints(null));
+      }
+      var track = stream.getVideoTracks()[0];
+      var settings = track.getSettings ? track.getSettings() : {};
+      if (settings.facingMode === "user" || settings.facingMode === "environment") facing = settings.facingMode;
+      deviceId = settings.deviceId || id || null;
+      video.classList.toggle("mirror", facing !== "environment");
+      video.srcObject = stream;
+      await new Promise(function (res) { video.onloadedmetadata = res; });
+      await video.play();
+    }
+
+    async function listCameras() {
+      try {
+        var devices = await navigator.mediaDevices.enumerateDevices();
+        return devices.filter(function (d) { return d.kind === "videoinput" && d.deviceId; });
+      } catch (e) { return []; }
+    }
+
+    async function showSwitchIfAvailable() {
+      if ((await listCameras()).length > 1) switchBtn.classList.remove("hidden");
+    }
+
+    async function switchCamera() {
+      if (switching || busy || finished) return;
+      switching = true; switchBtn.disabled = true; stable = 0;
+      guide.classList.remove("ready");
+      var prevId = deviceId, prevFacing = facing;
+      var cams = await listCameras();
+      var idx = cams.findIndex(function (c) { return c.deviceId === deviceId; });
+      var next = cams[(idx + 1) % cams.length];
+      facing = facing === "user" ? "environment" : "user";   // dikoreksi oleh getSettings bila tersedia
+      try {
+        setStatus("Mengganti kamera…", "", true);
+        await openCamera(next ? next.deviceId : null);
+        try { localStorage.setItem(CAM_KEY, facing); localStorage.setItem(CAM_ID_KEY, deviceId || ""); } catch (e) {}
+        lastHint = "";
+        setStatus("Lihat ke kamera dan diam sejenak…", "", true);
+      } catch (e) {
+        // Kembali ke kamera sebelumnya kalau kamera yang dipilih gagal dibuka
+        facing = prevFacing;
+        try { await openCamera(prevId); } catch (e2) {}
+        setStatus("Kamera lain tidak dapat dibuka", "warn", false);
+      }
+      switching = false; switchBtn.disabled = false;
     }
 
     function finish(result, text, kind) {
@@ -120,12 +208,8 @@
         await faceapi.nets.faceRecognitionNet.loadFromUri(CFG.modelUrl);
 
         setStatus("Membuka kamera…", "", true);
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
-        });
-        video.srcObject = stream;
-        await new Promise(function (res) { video.onloadedmetadata = res; });
-        await video.play();
+        await openCamera(deviceId);
+        showSwitchIfAvailable();
         startLoop();
       } catch (e) {
         finish({ status: "CAMERA_ERROR", message: String(e && e.message || e), final: true },
@@ -142,7 +226,7 @@
 
     async function loop() {
       if (!running || finished) return;
-      if (!busy) {
+      if (!busy && !switching) {
         try {
           var det = await faceapi
             .detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 }))
@@ -214,6 +298,7 @@
     }
 
     retryBtn.addEventListener("click", function () { if (!finished && !running) startLoop(); });
+    switchBtn.addEventListener("click", switchCamera);
     window.addEventListener("pagehide", stopCamera);
 
     {% if already_done %}
