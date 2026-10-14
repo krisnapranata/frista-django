@@ -90,6 +90,66 @@ Container menjalankan gunicorn di port **8010** sebagai user **uid 1000**. Cache
 dan `frista.log` disimpan di folder `./data` (di-mount ke `/app/data`). Port 8010 hanya HTTP,
 jadi tetap butuh reverse proxy HTTPS di depannya.
 
+### Ringkasan perintah (server dengan Nginx Proxy Manager)
+
+Salin per blok. Penjelasan tiap langkah ada di bawahnya.
+
+**A. Pasang pertama kali**
+
+```bash
+# 1. Ambil kode
+sudo mkdir -p /srv && cd /srv
+sudo git clone https://github.com/krisnapranata/frista-django.git
+sudo chown -R $USER: frista-django
+cd /srv/frista-django
+
+# 2. Folder data milik uid 1000 (tanpa ini container terus "Restarting")
+mkdir -p data
+sudo chown -R 1000:1000 data
+
+# 3. Buat .env, lalu buat 3 kunci acak untuk SECRET_KEY, APM_API_KEY, ADMIN_API_KEY
+cp .env.example .env
+for i in 1 2 3; do python3 -c "import secrets; print(secrets.token_urlsafe(40))"; done
+nano .env      # isi kunci, akun VClaim, DJANGO_DEBUG=false, domain (lihat langkah 4)
+
+# 4. Cari nama jaringan Nginx Proxy Manager (biasanya proxy_default)
+docker ps --format '{{.Names}}  {{.Image}}' | grep -i proxy-manager
+docker inspect proxy-npm-1 -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+
+# 5. Aktifkan docker-compose.npm.yml lewat .env (ganti proxy_default bila berbeda)
+grep -q '^COMPOSE_FILE=' .env || cat >> .env <<'EOF'
+
+COMPOSE_FILE=docker-compose.yml:docker-compose.npm.yml
+NPM_NETWORK=proxy_default
+EOF
+
+# 6. Jalankan dan cek
+docker compose up -d --build
+docker compose ps                  # tunggu "Up ... (healthy)", kolom PORTS kosong
+docker compose exec frista python manage.py frista_check
+```
+
+Lalu buat Proxy Host di panel NPM (`http://<ip-server>:81`): Forward Hostname `frista-django`,
+Port `8010`, SSL Let's Encrypt + Force SSL (detail di langkah 7).
+
+**B. Update ke versi terbaru**
+
+```bash
+cd /srv/frista-django
+git pull
+docker compose up -d --build
+docker compose ps
+```
+
+**C. Kalau container bermasalah**
+
+```bash
+cd /srv/frista-django
+docker compose ps
+docker compose logs --tail 60 frista
+sudo chown -R 1000:1000 data && docker compose up -d     # bila log berisi PermissionError
+```
+
 ### 1. Prasyarat
 
 - Docker dan Docker Compose **2.24 atau lebih baru** (`docker compose version`)
