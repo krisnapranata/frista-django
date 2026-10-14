@@ -1,0 +1,16 @@
+# Untuk server yang memakai Nginx Proxy Manager (NPM) di Docker.
+# Container FRISTA digabung ke jaringan NPM dan port 8010 TIDAK dibuka ke host;
+# NPM meneruskan ke http://frista-django:8010.
+#
+# Aktifkan lewat .env (tidak perlu -f di setiap perintah):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.npm.yml
+#   NPM_NETWORK=proxy_default        # nama jaringan Docker milik NPM
+services:
+  frista:
+    ports: !reset []
+    networks: [default, npm]
+
+networks:
+  npm:
+    external: true
+    name: ${NPM_NETWORK:-proxy_default}

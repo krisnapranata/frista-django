@@ -152,21 +152,17 @@ docker ps --format '{{.Names}}  {{.Image}}' | grep -i proxy-manager
 docker inspect <nama_container_npm> -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
 ```
 
-Lalu buat `docker-compose.override.yml`. File ini otomatis dibaca oleh `docker compose`
-dan tidak ikut ke git. Ganti `proxy_default` dengan nama jaringan dari perintah di atas:
+Lalu tambahkan dua baris ini di `.env` (ganti `proxy_default` dengan nama jaringan dari
+perintah di atas). Repo sudah berisi `docker-compose.npm.yml`; baris `COMPOSE_FILE` membuat
+`docker compose` memakainya otomatis, jadi tidak perlu `-f` di setiap perintah:
 
-```yaml
-services:
-  frista:
-    ports: !reset []          # port 8010 tidak dibuka ke host
-    networks: [default, npm]
-networks:
-  npm:
-    external: true
-    name: proxy_default
+```ini
+COMPOSE_FILE=docker-compose.yml:docker-compose.npm.yml
+NPM_NETWORK=proxy_default
 ```
 
-**nginx/Caddy langsung di host (bukan Docker).** Buka port hanya untuk localhost:
+**nginx/Caddy langsung di host (bukan Docker).** Buka port hanya untuk localhost dengan
+membuat `docker-compose.override.yml` (khusus server, tidak ikut ke git):
 
 ```yaml
 services:
@@ -219,7 +215,7 @@ git pull
 docker compose up -d --build
 ```
 
-`.env`, `data/`, dan `docker-compose.override.yml` tidak tersentuh oleh `git pull`.
+`.env`, `data/`, dan `docker-compose.override.yml` (kalau ada) tidak tersentuh oleh `git pull`.
 
 ### Troubleshooting
 
@@ -230,7 +226,7 @@ Lihat log dulu: `docker compose logs --tail 60 frista`
 | `Restarting (1)`, log berisi `PermissionError` atau `Unable to configure handler 'file'` | Folder `data` tidak ada atau bukan milik uid 1000 | `mkdir -p data && sudo chown -R 1000:1000 data && docker compose up -d` |
 | `Restarting (1)`, log berisi `SECRET_KEY setting must not be empty` | `.env` tidak ada atau `DJANGO_SECRET_KEY` kosong | Isi `.env` (langkah 4), lalu `docker compose up -d` |
 | Status `(unhealthy)`, log berisi `DisallowedHost` | `localhost` atau domain tidak ada di `DJANGO_ALLOWED_HOSTS` | Tambahkan, lalu `docker compose up -d` |
-| Proxy menampilkan 502 Bad Gateway | Container belum jalan, atau tidak satu jaringan dengan NPM | Cek `docker compose ps` dan nama jaringan di override |
+| Proxy menampilkan 502 Bad Gateway | Container belum jalan, atau tidak satu jaringan dengan NPM | Cek `docker compose ps` dan `NPM_NETWORK` di `.env` (harus sama dengan jaringan NPM) |
 | `capture_url` diawali `http://`, kamera ditolak di tablet | Proxy tidak mengirim `X-Forwarded-Proto https` | Aktifkan SSL/Force SSL di NPM, atau tambahkan header di nginx |
 | `frista_check`: tidak dapat menghubungi server FRISTA | DNS/firewall server tidak bisa ke BPJS | Cek `getent hosts frista.bpjs-kesehatan.go.id` dan akses keluar port 443 |
 | `frista_check`: login gagal | Username/password VClaim salah | Perbaiki `.env`, lalu `docker compose up -d` |
