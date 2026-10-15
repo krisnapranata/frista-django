@@ -314,45 +314,76 @@
                   : new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 });
     }
 
-    // Model diunduh sendiri (bukan loadFromUri) supaya kemajuan unduhan bisa ditampilkan.
-    // Header cache panjang dari server membuat unduhan berikutnya diambil dari cache tablet.
-    var loaded = {}, sizes = {};
+    // Model diunduh sendiri (bukan loadFromUri) supaya kemajuan unduhan bisa ditampilkan,
+    // lalu disimpan permanen di Cache Storage tablet: hanya diunduh sekali, tidak
+    // bergantung pada cache HTTP WebView yang bisa dibersihkan aplikasi/sistem.
+    // Naikkan versi nama cache bila file model diganti.
+    var MODEL_CACHE = "frista-faceapi-v1";
+    var got = {}, expect = {}, manifestsLeft = 3;
     function showProgress() {
-      var got = 0, total = 0, known = true, k;
-      for (k in loaded) { got += loaded[k]; if (sizes[k]) total += sizes[k]; else known = false; }
-      var mb = function (b) { return (b / 1048576).toFixed(1).replace(".", ","); };
-      setStatus("Memuat model pengenalan wajah… " + mb(got) + (known && total ? " / " + mb(total) : "") + " MB", "", true);
+      var a = 0, b = 0, k;
+      for (k in got) a += got[k];
+      if (!manifestsLeft) for (k in expect) b += expect[k];   // total baru pasti setelah semua manifest terbaca
+      var mb = function (n) { return (n / 1048576).toFixed(1).replace(".", ","); };
+      setStatus("Memuat model pengenalan wajah… " + mb(Math.min(a, b || a)) + (b ? " / " + mb(b) : "") + " MB", "", true);
     }
 
-    async function fetchBytes(url) {
+    async function openModelCache() {
+      try { return window.caches ? await caches.open(MODEL_CACHE) : null; } catch (e) { return null; }
+    }
+
+    // Ukuran asli (tidak terkompresi) bobot model dihitung dari manifest, karena dengan
+    // gzip Content-Length adalah ukuran terkompresi dan tidak bisa dipakai untuk progres.
+    function groupBytes(group) {
+      return group.weights.reduce(function (sum, w) {
+        var n = w.shape.reduce(function (a, d) { return a * d; }, 1);
+        var q = w.quantization && w.quantization.dtype;
+        return sum + n * (q === "uint8" ? 1 : q === "uint16" ? 2 : 4);
+      }, 0);
+    }
+
+    async function getBytes(url, store, track) {
+      if (store) {
+        try {
+          var hit = await store.match(url);
+          if (hit) {
+            var c = new Uint8Array(await hit.arrayBuffer());
+            if (track) { got[url] = c.length; showProgress(); }
+            return c;
+          }
+        } catch (e) {}
+      }
       var res = await fetch(url);
       if (!res.ok) throw new Error("HTTP " + res.status + " " + url);
-      sizes[url] = +res.headers.get("Content-Length") || 0;
-      loaded[url] = 0;
+      var out;
       if (!res.body || !res.body.getReader) {
-        var all = new Uint8Array(await res.arrayBuffer());
-        loaded[url] = all.length; showProgress();
-        return all;
+        out = new Uint8Array(await res.arrayBuffer());
+        if (track) { got[url] = out.length; showProgress(); }
+      } else {
+        var reader = res.body.getReader(), chunks = [], n = 0;
+        for (;;) {
+          var r = await reader.read();
+          if (r.done) break;
+          chunks.push(r.value); n += r.value.length;
+          if (track) { got[url] = n; showProgress(); }
+        }
+        out = new Uint8Array(n);
+        var off = 0;
+        chunks.forEach(function (ch) { out.set(ch, off); off += ch.length; });
       }
-      var reader = res.body.getReader(), chunks = [], n = 0;
-      for (;;) {
-        var r = await reader.read();
-        if (r.done) break;
-        chunks.push(r.value); n += r.value.length;
-        loaded[url] = n; showProgress();
-      }
-      var out = new Uint8Array(n), off = 0;
-      chunks.forEach(function (c) { out.set(c, off); off += c.length; });
+      if (store) { try { await store.put(url, new Response(out)); } catch (e) {} }
       return out;
     }
 
-    async function loadNet(net, file) {
+    async function loadNet(net, file, store) {
       var base = CFG.modelUrl.replace(/\/$/, "") + "/";
-      var res = await fetch(base + file + "-weights_manifest.json");
-      if (!res.ok) throw new Error("HTTP " + res.status + " " + file);
-      var manifest = await res.json(), map = {};
+      var manifest = JSON.parse(new TextDecoder().decode(await getBytes(base + file + "-weights_manifest.json", store, false)));
+      var map = {};
+      manifest.forEach(function (group, i) { expect[file + i] = groupBytes(group); });
+      manifestsLeft--;
+      showProgress();
       await Promise.all(manifest.map(async function (group) {
-        var parts = await Promise.all(group.paths.map(function (p) { return fetchBytes(base + p); }));
+        var parts = await Promise.all(group.paths.map(function (p) { return getBytes(base + p, store, true); }));
         var len = parts.reduce(function (a, p) { return a + p.length; }, 0);
         var buf = new Uint8Array(len), off = 0;
         parts.forEach(function (p) { buf.set(p, off); off += p.length; });
@@ -361,11 +392,12 @@
       net.loadFromWeightMap(map);
     }
 
-    function loadModels() {
+    async function loadModels() {
+      var store = await openModelCache();
       return Promise.all([
-        loadNet(DETECTOR.net, DETECTOR.file),
-        loadNet(faceapi.nets.faceLandmark68Net, "face_landmark_68_model"),
-        loadNet(faceapi.nets.faceRecognitionNet, "face_recognition_model")
+        loadNet(DETECTOR.net, DETECTOR.file, store),
+        loadNet(faceapi.nets.faceLandmark68Net, "face_landmark_68_model", store),
+        loadNet(faceapi.nets.faceRecognitionNet, "face_recognition_model", store)
       ]);
     }
 
