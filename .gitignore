@@ -2,6 +2,7 @@
 .cache/
 staticfiles/
 frista.log*
+fingerprint-transaksi.log*
 __pycache__/
 *.pyc
 venv/

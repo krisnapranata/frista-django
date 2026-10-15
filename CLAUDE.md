@@ -16,12 +16,13 @@ messages and the README are in Indonesian; keep it that way.
 source venv/bin/activate
 pip install -r requirements.txt
 
-python manage.py test frista                         # Django/APM flow tests (fake client)
+python manage.py test frista fingerprint             # Django/APM flow tests (fake client)
 python manage.py test frista.tests.ApmFlowTests.<test_name>
 python -m unittest discover -s tests                 # pure client tests, no Django
 python -m unittest discover -s tests -k <test_name>
 
 python manage.py frista_check [--nik 16digit]        # real login (and NIK lookup) against BPJS
+python manage.py fingerprint_check                   # real login to the BPJS fingerprint server
 python manage.py runserver localhost:8000            # camera works on http only for localhost
 
 docker compose up -d --build                         # gunicorn on port 8010, state in ./data
@@ -61,6 +62,18 @@ The two test suites fake BPJS at different layers:
   `FRISTA_MAX_ATTEMPTS`. `StatusCode.PASSED` and `RETRYABLE` decide when a result is final.
 - The result goes back to the APK via the `AndroidFrista.onResult` JS bridge (see
   `android-example/FristaActivity.kt`), or via `postMessage` when the page is in an iframe.
+- `fingerprint/` is a separate app for BPJS fingerprint verification ("After",
+  `fp.bpjs-kesehatan.go.id`), ported from [PHP-After](https://github.com/banguncode/PHP-After).
+  `after_client.py` is Django-free and reuses `TokenStore`/`FristaUnreachable` from
+  `frista/client.py`. It does not modify FRISTA code, only imports from it. It keeps its
+  own token keys (`after:*`) and the same total time budget as FRISTA.
+  - Endpoints: `POST /api/fingerprint/verify` (APM or Admin key), `register` and `reset`
+    (Admin key), and the loket page `GET /fingerprint/` (DigitalPersona WebSDK; the page
+    holds the key and the officer name in `localStorage`).
+  - Every action is written as one JSON line to the `fingerprint.transaksi` logger
+    (`FINGERPRINT_LOG_FILE`). That dict is built field by field, so minutiae and images
+    must never be added to it. `fingerprint/tests.py` asserts this.
+  - Register is **untested** against BPJS, upstream too. Open questions are marked `TODO`.
 
 ## BPJS response quirks (verified against the real server)
 

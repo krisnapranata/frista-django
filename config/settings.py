@@ -38,6 +38,7 @@ CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "frista",
+    "fingerprint",
 ]
 
 MIDDLEWARE = [
@@ -105,6 +106,19 @@ FRISTA = {
     "REQUEST_BUDGET": float(env("FRISTA_REQUEST_BUDGET", "45")),
 }
 
+# ----------------------------------------------------- Sidik jari (After)
+# Akun default sama dengan FRISTA (akun VClaim faskes)
+FINGERPRINT = {
+    "USERNAME": env("FINGERPRINT_USERNAME", FRISTA["USERNAME"]),
+    "PASSWORD": env("FINGERPRINT_PASSWORD", FRISTA["PASSWORD"]),
+    "BASE_URL": env("FINGERPRINT_BASE_URL", "https://fp.bpjs-kesehatan.go.id"),
+    "VERIFY_SSL": FRISTA["VERIFY_SSL"],
+    "TIMEOUT": FRISTA["TIMEOUT"],
+    "REQUEST_BUDGET": FRISTA["REQUEST_BUDGET"],
+}
+# Log transaksi sidik jari (JSON per baris, tanpa minutiae/gambar)
+FINGERPRINT_LOG_FILE = env("FINGERPRINT_LOG_FILE", str(BASE_DIR / "fingerprint-transaksi.log"))
+
 # Kunci untuk APM (boleh ada di APK; hanya bisa membuat sesi & membaca hasil)
 APM_API_KEY = env("APM_API_KEY", "")
 # Kunci petugas/SIMRS (JANGAN dimasukkan ke APK; bisa registrasi wajah)
@@ -140,7 +154,10 @@ WHITENOISE_ADD_HEADERS_FUNCTION = _static_cache_headers
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {"std": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
+    "formatters": {
+        "std": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+        "raw": {"format": "%(message)s"},
+    },
     "handlers": {
         "console": {"class": "logging.StreamHandler", "formatter": "std"},
         "file": {
@@ -150,6 +167,17 @@ LOGGING = {
             "backupCount": 5,
             "formatter": "std",
         },
+        "transaksi": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": FINGERPRINT_LOG_FILE,
+            "maxBytes": 5 * 1024 * 1024,
+            "backupCount": 10,
+            "formatter": "raw",
+        },
     },
-    "loggers": {"frista": {"handlers": ["console", "file"], "level": env("LOG_LEVEL", "INFO")}},
+    "loggers": {
+        "frista": {"handlers": ["console", "file"], "level": env("LOG_LEVEL", "INFO")},
+        "fingerprint": {"handlers": ["console", "file"], "level": env("LOG_LEVEL", "INFO")},
+        "fingerprint.transaksi": {"handlers": ["transaksi"], "level": "INFO", "propagate": False},
+    },
 }

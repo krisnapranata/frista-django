@@ -50,7 +50,13 @@ frista_django/
 │   ├── templates/frista/capture.html   halaman kamera untuk WebView
 │   ├── management/commands/frista_check.py   uji login ke BPJS
 │   └── tests.py             uji alur APM (Django)
-├── tests/test_client.py     uji klien (tanpa Django)
+├── fingerprint/             sidik jari BPJS (After), lihat bagian "Sidik Jari BPJS"
+│   ├── after_client.py      klien sidik jari (Python murni)
+│   ├── views.py             endpoint API + halaman capture loket
+│   ├── templates/fingerprint/capture.html   halaman capture DigitalPersona
+│   └── management/commands/fingerprint_check.py   uji login ke BPJS
+├── tests/test_client.py     uji klien FRISTA (tanpa Django)
+├── tests/test_after_client.py   uji klien sidik jari (tanpa Django)
 ├── static/faceapi/          face-api.js 0.22.2 + model (MIT)
 ├── android-example/FristaActivity.kt   contoh integrasi APK
 └── .env.example
@@ -393,6 +399,83 @@ Lihat `android-example/FristaActivity.kt`. Intinya:
 Halaman yang sama juga bisa disematkan di `iframe` (APM berbasis web). Hasilnya dikirim
 lewat `window.parent.postMessage({source: "frista", result})`.
 
+## Sidik Jari BPJS
+
+Modul `fingerprint` memverifikasi sidik jari peserta ke server sidik jari BPJS
+(`fp.bpjs-kesehatan.go.id`, dikenal sebagai "After"). Logikanya diporting dari
+[PHP-After](https://github.com/banguncode/PHP-After). Endpoint ini juga **tidak resmi**.
+Modul ini berdiri sendiri dan tidak mengubah alur FRISTA.
+
+### Kebutuhan alat (PC loket Windows)
+
+- Pembaca sidik jari **DigitalPersona / HID U.are.U 4500** (USB).
+- **HID Authentication Device Client** (dulu DigitalPersona Lite Client):
+  <https://digitalpersona.hidglobal.com/lite-client/>.
+  **Uninstall dulu semua SDK/driver DigitalPersona lain** sebelum memasangnya. Kalau tidak,
+  halaman tidak bisa terhubung ke alat.
+- Browser di PC loket butuh internet untuk memuat pustaka DigitalPersona dari unpkg.com.
+
+### Setup
+
+Secara default akun sidik jari memakai akun VClaim yang sama dengan FRISTA
+(`FRISTA_USERNAME`/`FRISTA_PASSWORD`). Isi `FINGERPRINT_USERNAME`/`FINGERPRINT_PASSWORD`
+di `.env` hanya kalau akunnya berbeda. Setelah deploy, uji login:
+
+```bash
+docker compose exec frista python manage.py fingerprint_check
+```
+
+Buka `https://<server>/fingerprint/` di PC loket. Isi **Pengaturan loket** sekali
+(kunci API dan nama petugas, tersimpan di browser PC itu). Lalu ketik NIK atau No. Kartu,
+tekan **Mulai Pindai**, dan minta peserta menempelkan jarinya.
+
+### Endpoint
+
+| Method | Path | Kunci | Fungsi |
+|---|---|---|---|
+| GET | `/fingerprint/` | – | Halaman capture untuk petugas loket |
+| POST | `/api/fingerprint/verify` | `X-APM-Key` atau `X-Admin-Key` | Verifikasi sidik jari |
+| POST | `/api/fingerprint/register` | `X-Admin-Key` | Daftar 2 jari (**BELUM TERUJI** ke BPJS) |
+| POST | `/api/fingerprint/reset` | `X-Admin-Key` | Hapus sidik jari peserta |
+
+```bash
+# Verifikasi: id = NIK 16 digit / No. Kartu 13 digit, finger = minutiae Base64
+# (SampleFormat.Intermediate DigitalPersona). petugas opsional, hanya untuk log.
+curl -X POST https://<server>/api/fingerprint/verify \
+  -H "X-APM-Key: <APM_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"id":"<NIK>","finger":"AOh...","petugas":"Budi"}'
+
+# Daftar 2 jari (kanan = index 1, kiri = index 6); gambar Base64 JPEG/PNG
+curl -X POST https://<server>/api/fingerprint/register \
+  -H "X-Admin-Key: <ADMIN_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"nokartu":"<13 digit>","finger_kanan":"APi...","img_kanan":"/9j/...",
+       "finger_kiri":"APi...","img_kiri":"/9j/...","petugas":"Budi"}'
+
+# Hapus: alasan 01 = enrollment ulang, 02 = fisik jari rusak/cacat
+curl -X POST https://<server>/api/fingerprint/reset \
+  -H "X-Admin-Key: <ADMIN_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"nokartu":"<13 digit>","alasan":"02","petugas":"Budi"}'
+```
+
+Status hasil: `OK`, `NOT_RECOGNIZED` (sidik jari tidak cocok), `NOT_ENROLLED` (belum
+rekam sidik jari), `NOT_REGISTERED` (bukan peserta), `INVALID_ID`, `INVALID_PARTICIPANT`,
+`INVALID_MINUTIAE`, `INVALID_IMAGE`, `INVALID_REASON`, `AUTH_FAILED`,
+`SERVER_UNREACHABLE`, `INTEGRATION_ERROR` (lihat `bpjs_message`), dan `INTERNAL_SERVER_ERROR`.
+
+### Log transaksi
+
+Setiap verify, register, dan reset dicatat di `data/fingerprint-transaksi.log`
+(`FINGERPRINT_LOG_FILE`), satu baris JSON per transaksi. Isinya waktu, aksi, NIK/No.
+Kartu tersamar, status, kode dan pesan BPJS, nama petugas, IP, dan durasi.
+**Minutiae dan gambar sidik jari tidak pernah disimpan**, baik di log maupun di cache.
+
+### Belum diketahui (ditandai `TODO` di `fingerprint/after_client.py`)
+
+- Cara BPJS menandai token kedaluwarsa. Sekarang: login ulang saat HTTP 401 dan setiap ganti hari.
+- Isi body sukses verify/register. Kalau ada, bagian `response` diteruskan sebagai `data`.
+- Apakah minutiae perlu padding `=`. Sekarang mengikuti contoh PHP-After: tidak ditambah.
+- **Register belum pernah diuji ke server BPJS**, termasuk di PHP-After.
+
 ## Hal yang perlu diketahui
 
 - **Tidak ada deteksi liveness.** face-api.js tidak bisa membedakan wajah asli dengan
@@ -407,5 +490,8 @@ lewat `window.parent.postMessage({source: "frista", result})`.
 ## Lisensi pihak ketiga
 
 - Logika endpoint diporting dari [PHP-Frista](https://github.com/banguncode/PHP-Frista), MIT (lihat folder `licenses/`).
+- Logika sidik jari diporting dari [PHP-After](https://github.com/banguncode/PHP-After), MIT (lihat folder `licenses/`).
+- Halaman sidik jari memuat [@digitalpersona/websdk](https://www.npmjs.com/package/@digitalpersona/websdk) 1.1.0
+  dan [@digitalpersona/fingerprint](https://www.npmjs.com/package/@digitalpersona/fingerprint) 1.0.0 (MIT) dari unpkg.
 - [face-api.js](https://github.com/justadudewhohacks/face-api.js) 0.22.2 dan modelnya, MIT
   (lihat folder `licenses/`).

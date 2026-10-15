@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     CACHE_LOCATION=/app/data/cache \
     LOG_FILE=/app/data/frista.log \
+    FINGERPRINT_LOG_FILE=/app/data/fingerprint-transaksi.log \
     PORT=8010 \
     GUNICORN_WORKERS=3
 

@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verifikasi Sidik Jari</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0f1720; --panel: #17212c; --text: #eef3f7; --muted: #9fb0bf;
+    --ok: #2fbf71; --warn: #f2b33d; --err: #ef5a5a; --accent: #3aa0ff;
+    --line: rgba(255,255,255,.14);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 24px 16px; gap: 16px; }
+  .wrap { width: min(100%, 620px); display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: clamp(20px, 3vw, 28px); margin: 0; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); font-size: 15px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .pill.ok .dot { background: var(--ok); }
+  .pill.err .dot { background: var(--err); }
+  .card { background: var(--panel); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  label { font-size: 14px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+  input { font: inherit; font-size: 22px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); width: 100%; letter-spacing: .04em; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  details input { font-size: 16px; letter-spacing: 0; }
+  summary { cursor: pointer; color: var(--muted); }
+  details[open] summary { margin-bottom: 12px; }
+  details .card { padding: 0; background: none; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 18px; font-weight: 600; padding: 14px 28px; border: 0; border-radius: 12px;
+    background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: var(--panel); border: 1px solid var(--line); font-weight: 400; }
+  button:disabled { opacity: .5; cursor: default; }
+  .scan { display: flex; align-items: center; gap: 16px; min-height: 64px; font-size: clamp(16px, 2.4vw, 20px); }
+  .finger { width: 56px; height: 56px; flex: none; border-radius: 50%; display: grid; place-items: center;
+    background: var(--bg); border: 2px solid var(--line); }
+  .finger svg { width: 32px; height: 32px; stroke: var(--muted); }
+  .scan.active .finger { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .scan.active .finger svg { stroke: var(--accent); }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent); } }
+  .result { border-radius: 16px; padding: 18px 20px; font-size: clamp(17px, 2.6vw, 22px); line-height: 1.4; }
+  .result small { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); }
+  .result.ok { background: color-mix(in srgb, var(--ok) 25%, var(--panel)); }
+  .result.warn { background: color-mix(in srgb, var(--warn) 25%, var(--panel)); }
+  .result.err { background: color-mix(in srgb, var(--err) 25%, var(--panel)); }
+  .note { color: var(--muted); font-size: 13px; margin: 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Verifikasi Sidik Jari BPJS</h1>
+    <span class="pill" id="device"><span class="dot"></span><span id="deviceText">Memeriksa alat…</span></span>
+  </header>
+
+  <details class="card" id="settings">
+    <summary>Pengaturan loket</summary>
+    <div class="card">
+      <label>Kunci API (APM atau Admin)
+        <input id="apiKey" type="password" autocomplete="off">
+      </label>
+      <label>Nama petugas
+        <input id="petugas" type="text" maxlength="60" autocomplete="off">
+      </label>
+      <div class="actions"><button id="saveSettings" type="button" class="secondary">Simpan</button></div>
+      <p class="note">Disimpan di browser PC ini saja.</p>
+    </div>
+  </details>
+
+  <div class="card">
+    <label>NIK (16 digit) atau No. Kartu BPJS (13 digit)
+      <input id="ident" inputmode="numeric" maxlength="16" autocomplete="off" placeholder="Ketik nomor peserta">
+    </label>
+    <div class="scan" id="scan">
+      <span class="finger"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round">
+        <path d="M12 3a7 7 0 0 0-7 7v3M19 10a7 7 0 0 0-3.2-5.9M12 7a3 3 0 0 0-3 3v4a8 8 0 0 0 1.5 4.7M15 10v3a11 11 0 0 1-1 4.6M12 11v2a14 14 0 0 1-2 7M18.5 14a16 16 0 0 1-1.5 5"/>
+      </svg></span>
+      <span id="scanText">Masukkan nomor peserta, lalu tekan Mulai Pindai.</span>
+    </div>
+    <div class="actions">
+      <button id="startBtn" type="button">Mulai Pindai</button>
+      <button id="stopBtn" type="button" class="secondary hidden">Batal</button>
+    </div>
+  </div>
+
+  <div class="result hidden" id="result"></div>
+  <p class="note">Butuh alat DigitalPersona U.are.U 4500 dan HID Authentication Device Client (Lite Client) di PC ini.</p>
+</div>
+
+{{ cfg|json_script:"fp-cfg" }}
+<script src="https://unpkg.com/@digitalpersona/websdk@1.1.0/dist/websdk.client.ui.js"></script>
+<script src="https://unpkg.com/@digitalpersona/fingerprint@1.0.0/dist/fingerprint.sdk.min.js"></script>
+<script>
+(function () {
+  "use strict";
+  var CFG = JSON.parse(document.getElementById("fp-cfg").textContent);
+  var $ = function (id) { return document.getElementById(id); };
+  var deviceEl = $("device"), deviceText = $("deviceText"), scanEl = $("scan"), scanText = $("scanText");
+  var resultEl = $("result"), startBtn = $("startBtn"), stopBtn = $("stopBtn"), identEl = $("ident");
+  var KEY_STORE = "fp_api_key", PETUGAS_STORE = "fp_petugas";
+  var api = null, scanning = false, busy = false;
+
+  // ---------- pengaturan loket (hanya di browser ini) ----------
+  function load(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function save(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  $("apiKey").value = load(KEY_STORE);
+  $("petugas").value = load(PETUGAS_STORE);
+  if (!$("apiKey").value || !$("petugas").value) $("settings").open = true;
+  $("saveSettings").addEventListener("click", function () {
+    save(KEY_STORE, $("apiKey").value.trim());
+    save(PETUGAS_STORE, $("petugas").value.trim());
+    $("settings").open = false;
+  });
+
+  function setDevice(text, kind) {
+    deviceText.textContent = text;
+    deviceEl.className = "pill" + (kind ? " " + kind : "");
+  }
+  function setScan(text, active) {
+    scanText.textContent = text;
+    scanEl.classList.toggle("active", !!active);
+  }
+  function showResult(text, kind, detail) {
+    resultEl.className = "result " + kind;
+    resultEl.textContent = text;
+    if (detail) { var s = document.createElement("small"); s.textContent = detail; resultEl.appendChild(s); }
+  }
+  function hideResult() { resultEl.className = "result hidden"; resultEl.textContent = ""; }
+  function setScanning(on) {
+    scanning = on;
+    startBtn.disabled = on || busy;
+    stopBtn.classList.toggle("hidden", !on);
+    identEl.disabled = on || busy;
+  }
+
+  // ---------- alat DigitalPersona ----------
+  if (!window.Fingerprint || !window.Fingerprint.WebApi) {
+    setDevice("SDK tidak termuat", "err");
+    showResult("Pustaka DigitalPersona gagal dimuat. Periksa koneksi internet PC loket.", "err");
+    startBtn.disabled = true;
+    return;
+  }
+  api = new Fingerprint.WebApi();
+
+  async function refreshDevice() {
+    try {
+      var list = await api.enumerateDevices();
+      if (list && list.length) setDevice("Alat terhubung", "ok");
+      else setDevice("Alat tidak terhubung", "err");
+      return list || [];
+    } catch (e) {
+      setDevice("Layanan alat tidak berjalan", "err");
+      return [];
+    }
+  }
+
+  api.onDeviceConnected = function () { setDevice("Alat terhubung", "ok"); };
+  api.onDeviceDisconnected = function () {
+    setDevice("Alat tidak terhubung", "err");
+    if (scanning) { setScanning(false); setScan("Alat dicabut. Pasang kembali lalu tekan Mulai Pindai.", false); }
+  };
+  api.onCommunicationFailed = function () {
+    setDevice("Layanan alat tidak berjalan", "err");
+    showResult("Tidak dapat berkomunikasi dengan alat sidik jari.", "err",
+               "Pastikan HID Authentication Device Client (Lite Client) terpasang dan berjalan di PC ini.");
+  };
+  api.onErrorOccurred = function (e) {
+    showResult("Terjadi kesalahan pada alat sidik jari.", "err", e && e.error && e.error.message || "");
+  };
+  api.onQualityReported = function (e) {
+    var q = e && e.quality, good = window.Fingerprint.QualityCode && Fingerprint.QualityCode.Good;
+    if (scanning && !busy && q !== undefined && q !== good) {
+      setScan("Gambar kurang baik. Angkat jari lalu letakkan lagi, tekan lebih rata.", true);
+    }
+  };
+
+  api.onSamplesAcquired = function (event) {
+    if (!scanning || busy) return;
+    var samples = typeof event.samples === "string" ? JSON.parse(event.samples) : event.samples;
+    var sample = (samples && samples[0] && (samples[0].Data || samples[0])) || "";
+    // Sama seperti contoh PHP-After: base64url → base64, tanpa menambah padding
+    var minutiae = String(sample).replace(/-/g, "+").replace(/_/g, "/");
+    if (!minutiae) return;
+    send(minutiae);
+  };
+
+  // ---------- alur verifikasi ----------
+  async function start() {
+    hideResult();
+    var ident = identEl.value.replace(/\D/g, "");
+    identEl.value = ident;
+    if (!/^(\d{13}|\d{16})$/.test(ident)) {
+      showResult("Masukkan NIK 16 digit atau No. Kartu BPJS 13 digit.", "warn"); identEl.focus(); return;
+    }
+    if (!load(KEY_STORE)) {
+      showResult("Kunci API belum diisi. Buka Pengaturan loket.", "warn"); $("settings").open = true; return;
+    }
+    if (!(await refreshDevice()).length) {
+      showResult("Alat sidik jari tidak terdeteksi.", "err", "Periksa kabel USB dan layanan HID Authentication Device Client."); return;
+    }
+    try {
+      await api.startAcquisition(Fingerprint.SampleFormat.Intermediate);
+      setScanning(true);
+      setScan("Letakkan jari peserta di alat…", true);
+    } catch (e) {
+      showResult("Gagal memulai pemindaian.", "err", e && e.message || String(e));
+    }
+  }
+
+  async function stop() {
+    setScanning(false);
+    setScan("Masukkan nomor peserta, lalu tekan Mulai Pindai.", false);
+    try { await api.stopAcquisition(); } catch (e) {}
+  }
+
+  async function send(minutiae) {
+    busy = true;
+    try { await api.stopAcquisition(); } catch (e) {}
+    setScanning(false);
+    setScan("Memverifikasi ke BPJS…", true);
+    var key = load(KEY_STORE), data;
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 70000) : null;
+    try {
+      var res = await fetch(CFG.verifyUrl, {
+        method: "POST",
+        // Kunci dikirim di kedua header: server menerima kunci APM maupun Admin
+        headers: { "Content-Type": "application/json", "X-APM-Key": key, "X-Admin-Key": key },
+        body: JSON.stringify({ id: identEl.value, finger: minutiae, petugas: load(PETUGAS_STORE) }),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      try { data = await res.json(); }
+      catch (e) { data = { status: "HTTP_" + res.status, message: "Server membalas HTTP " + res.status }; }
+    } catch (e) {
+      data = { status: "NETWORK_ERROR",
+               message: e && e.name === "AbortError" ? "Server terlalu lama menjawab" : "Tidak dapat terhubung ke server" };
+    }
+    if (timer) clearTimeout(timer);
+    minutiae = null;
+    busy = false;
+    setScanning(false);
+    setScan("Tekan Mulai Pindai untuk pemindaian berikutnya.", false);
+    handle(data);
+  }
+
+  var MESSAGES = {
+    OK: ["Sidik jari COCOK. Verifikasi berhasil.", "ok"],
+    NOT_RECOGNIZED: ["Sidik jari tidak cocok. Ulangi dengan jari yang sama seperti saat pendaftaran.", "warn"],
+    NOT_ENROLLED: ["Peserta belum rekam sidik jari. Lakukan pendaftaran di aplikasi Sidik Jari BPJS.", "warn"],
+    NOT_REGISTERED: ["Nomor tidak terdaftar sebagai peserta BPJS. Periksa kembali NIK / No. Kartu.", "warn"],
+    INVALID_ID: ["Nomor identitas tidak valid.", "warn"],
+    INVALID_MINUTIAE: ["Data sidik jari dari alat tidak valid. Ulangi pemindaian.", "warn"],
+    UNAUTHORIZED: ["Kunci API ditolak server. Periksa Pengaturan loket.", "err"],
+    AUTH_FAILED: ["Login ke server BPJS gagal. Hubungi admin (akun VClaim).", "err"],
+    SERVER_UNREACHABLE: ["Server BPJS tidak dapat dihubungi. Coba lagi beberapa saat.", "err"]
+  };
+
+  function handle(r) {
+    var m = MESSAGES[r.status];
+    var detail = r.bpjs_message && r.status !== "OK" ? "Pesan BPJS: " + r.bpjs_message : (m ? "" : r.status);
+    if (m) showResult(m[0], m[1], detail);
+    else showResult(r.message || "Terjadi kesalahan.", "err", detail);
+    if (r.status === "OK") identEl.value = "";
+  }
+
+  startBtn.addEventListener("click", start);
+  stopBtn.addEventListener("click", stop);
+  identEl.addEventListener("keydown", function (e) { if (e.key === "Enter" && !scanning && !busy) start(); });
+  window.addEventListener("pagehide", function () { try { api.stopAcquisition(); } catch (e) {} });
+  refreshDevice();
+})();
+</script>
+</body>
+</html>
