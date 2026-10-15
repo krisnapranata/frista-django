@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import secrets
+import time
 
 from django.conf import settings
 from django.core import signing
@@ -80,6 +81,11 @@ def _mask(value, keep=4):
     return s if len(s) <= keep else "*" * (len(s) - keep) + s[-keep:]
 
 
+def _full_nokartu(value):
+    value = str(value or "")
+    return len(value) == 13 and value.isdigit()
+
+
 def _public_result(result):
     """Versi hasil untuk ditampilkan di layar kiosk (NIK & no. kartu disamarkan)."""
     out = {"status": result["status"], "message": result.get("message", "")}
@@ -133,6 +139,14 @@ def session_result(request, sid):
         return _err("NOT_FOUND", "Sesi tidak ditemukan atau sudah kedaluwarsa", 404)
     if sess["result"] is None:
         return JsonResponse({"status": "PENDING", "attempts": sess["attempts"]})
+    result = sess["result"]
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if result["status"] in S.PASSED and not _full_nokartu(data.get("nokartu")):
+        # nik2 tadi lambat/gagal: coba lagi sekarang, APM butuh nokartu lengkap untuk SEP
+        get_client().fill_nokartu(sess["member_id"], data)
+        if _full_nokartu(data.get("nokartu")):
+            result["data"] = data
+            cache.set(_sess_key(sid), sess, timeout=_ttl() + 600)
     # Hasil lengkap (termasuk nokartu) untuk dipakai APM membuat SEP
     return JsonResponse(sess["result"])
 
@@ -196,7 +210,9 @@ def capture_verify(request):
         return _err("TOO_MANY_ATTEMPTS", "Batas percobaan habis, silakan hubungi petugas", 429)
 
     sess["attempts"] += 1
+    started = time.monotonic()
     result = get_client().verify(sess["member_id"], body.get("encoding"))
+    elapsed = time.monotonic() - started
     result["attempt"] = sess["attempts"]
     result["max_attempts"] = max_attempts
 
@@ -206,7 +222,8 @@ def capture_verify(request):
         sess["result"] = result
     cache.set(_sess_key(sid), sess, timeout=_ttl() + 600)
 
-    log.info("Verifikasi sid=%s percobaan=%s status=%s", sid, sess["attempts"], result["status"])
+    log.info("Verifikasi sid=%s percobaan=%s status=%s (%.1f detik)",
+             sid, sess["attempts"], result["status"], elapsed)
     public = _public_result(result)
     public.update(attempt=result["attempt"], max_attempts=max_attempts, final=final,
                   session_id=sid)

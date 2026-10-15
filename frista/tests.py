@@ -115,6 +115,26 @@ class ApmFlowTests(SimpleTestCase):
         self.assertEqual(self.client.get(reverse("frista:session_result", args=[sid]), **APM).json()["status"],
                          S.FACE_MISMATCH)
 
+    def test_bpjs_timeout_can_be_retried(self):
+        _, token = self.new_session()
+        self.client_mock.verify.return_value = {"status": S.SERVER_UNREACHABLE, "message": "timeout"}
+        body = self.post("frista:capture_verify", {"t": token, "encoding": ENC}).json()
+        self.assertEqual(body["status"], S.SERVER_UNREACHABLE)
+        self.assertFalse(body["final"])
+
+    def test_result_refills_masked_nokartu(self):
+        # nik2 lambat saat verifikasi: nokartu dilengkapi saat APM mengambil hasil
+        sid, token = self.new_session()
+        self.client_mock.verify.return_value = {
+            "status": S.OK, "message": "ok", "data": {"nik": NIK, "nokartu": "000*******890"},
+        }
+        self.client_mock.fill_nokartu.side_effect = lambda mid, data: data.update(nokartu="0001234567890")
+        self.post("frista:capture_verify", {"t": token, "encoding": ENC})
+        url = reverse("frista:session_result", args=[sid])
+        self.assertEqual(self.client.get(url, **APM).json()["data"]["nokartu"], "0001234567890")
+        self.client.get(url, **APM)
+        self.assertEqual(self.client_mock.fill_nokartu.call_count, 1)   # disimpan, tidak diulang
+
     def test_unregistered_is_final(self):
         sid, token = self.new_session()
         self.client_mock.verify.return_value = {"status": S.UNREGISTERED, "message": "belum rekam"}

@@ -550,16 +550,30 @@
       busy = true; running = false;
       setStatus("Memverifikasi data peserta…", "", true);
       var res, data;
+      // Server membatasi verifikasi ~45 detik; beri sedikit kelonggaran sebelum menyerah
+      var ctrl = window.AbortController ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 70000) : null;
       try {
         res = await fetch(CFG.verifyUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ t: TOKEN, encoding: Array.from(descriptor) })
+          body: JSON.stringify({ t: TOKEN, encoding: Array.from(descriptor) }),
+          signal: ctrl ? ctrl.signal : undefined
         });
-        data = await res.json();
+        try {
+          data = await res.json();
+        } catch (e) {
+          // Bukan JSON: biasanya halaman error proxy (502/504) karena server terlalu lama
+          data = { status: "NETWORK_ERROR", final: false,
+                   message: "Server APM membalas HTTP " + res.status +
+                            (res.status === 502 || res.status === 504 ? " (waktu tunggu habis)" : "") };
+        }
       } catch (e) {
-        data = { status: "NETWORK_ERROR", message: "Tidak dapat terhubung ke server APM", final: false };
+        data = { status: "NETWORK_ERROR", final: false,
+                 message: e && e.name === "AbortError" ? "Server APM terlalu lama menjawab"
+                                                       : "Tidak dapat terhubung ke server APM" };
       }
+      if (timer) clearTimeout(timer);
       busy = false;
       if (data.attempt) attemptsEl.textContent = "Percobaan " + data.attempt + " dari " + data.max_attempts;
       handle(data);
@@ -576,6 +590,7 @@
         case "FACE_MISMATCH":
         case "FACE_UNPROCESSABLE":
         case "DUPLICATE_PHOTO":
+        case "SERVER_UNREACHABLE":
         case "NETWORK_ERROR":
           if (r.final) { finish(r, "Verifikasi gagal. Silakan ke loket petugas.", "err"); }
           else if (MANUAL) {

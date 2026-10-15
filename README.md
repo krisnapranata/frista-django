@@ -299,6 +299,7 @@ Lihat log dulu: `docker compose logs --tail 60 frista`
 | Status `(unhealthy)`, log berisi `DisallowedHost` | `localhost` atau domain tidak ada di `DJANGO_ALLOWED_HOSTS` | Tambahkan, lalu `docker compose up -d` |
 | Proxy menampilkan 502 Bad Gateway | Container belum jalan, atau tidak satu jaringan dengan NPM | Cek `docker compose ps` dan `NPM_NETWORK` di `.env` (harus sama dengan jaringan NPM) |
 | `capture_url` diawali `http://`, kamera ditolak di tablet | Proxy tidak mengirim `X-Forwarded-Proto https` | Aktifkan SSL/Force SSL di NPM, atau tambahkan header di nginx |
+| Lama di "Memverifikasi data peserta", lalu "Server APM membalas HTTP 502/504" atau "terlalu lama menjawab" | Server BPJS lambat; total panggilan melewati batas 60 detik gunicorn/proxy | Lihat lama tiap panggilan di `grep FRISTA data/frista.log`. Server menyerah setelah `FRISTA_REQUEST_BUDGET` (45 detik) dan peserta bisa mengambil ulang |
 | `frista_check`: tidak dapat menghubungi server FRISTA | DNS/firewall server tidak bisa ke BPJS | Cek `getent hosts frista.bpjs-kesehatan.go.id` dan akses keluar port 443 |
 | `frista_check`: login gagal | Username/password VClaim salah | Perbaiki `.env`, lalu `docker compose up -d` |
 

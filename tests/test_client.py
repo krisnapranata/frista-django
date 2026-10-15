@@ -50,7 +50,8 @@ class FakeSession:
     def request(self, method, url, headers=None, json=None, data=None, files=None, timeout=None, verify=None):
         path = url.split(".go.id", 1)[1]
         self.calls.append({"method": method, "path": path, "headers": headers or {},
-                           "json": json, "data": data, "files": files, "verify": verify})
+                           "json": json, "data": data, "files": files, "verify": verify,
+                           "timeout": timeout})
         queue = self.routes.get(path)
         if not queue:
             raise AssertionError(f"Request tak terduga: {method} {path}")
@@ -273,6 +274,30 @@ class TestClient(unittest.TestCase):
         r = client.nik(NIK)
         self.assertEqual(r["status"], S.OK)
         self.assertEqual(r["data"], {"nama": "X", "nik": NIK, "nokartu": "0001234567890"})
+
+    def test_budget_caps_request_timeout(self):
+        client, http = make_client({
+            "/frista-api/user/login/rs": [LOGIN_OK],
+            "/frista-api/face/match2": [(200, {"status": True, "data": {"nokartu": "0001234567890"}})],
+        }, timeout=30, request_budget=10)
+        client.verify(NIK, ENC)
+        self.assertTrue(all(c["timeout"] <= 10 for c in http.calls), http.calls)
+
+    def test_budget_exhausted_is_unreachable(self):
+        # Sisa waktu < 1 detik: request BPJS tidak dikirim, APM tetap dapat jawaban
+        client, http = make_client({}, request_budget=0.5)
+        r = client.verify(NIK, ENC)
+        self.assertEqual(r["status"], S.SERVER_UNREACHABLE)
+        self.assertEqual(http.calls, [])
+
+    def test_fill_nokartu_public(self):
+        client, _ = make_client({
+            "/frista-api/user/login/rs": [LOGIN_OK],
+            "/frista-api/face/nik2": [(200, {"status": True, "nama": "X", "nik": NIK, "nokartu": "0001234567890"})],
+        })
+        data = {"nokartu": "000*******890"}
+        client.fill_nokartu(NIK, data)
+        self.assertEqual(data["nokartu"], "0001234567890")
 
 
 if __name__ == "__main__":

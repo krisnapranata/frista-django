@@ -28,6 +28,7 @@ import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, Sequence
 
@@ -93,6 +94,10 @@ class FristaConfig:
     timeout: float = 30.0
     # Token dicek ulang ke server paling sering tiap N detik
     session_check_interval: float = 60.0
+    # Batas waktu TOTAL satu verifikasi (cek sesi + login + match2 + nik2). Harus di
+    # bawah batas gunicorn/proxy (60 detik), supaya APM tetap menerima jawaban JSON
+    # dan bukan halaman error 502/504.
+    request_budget: float = 45.0
     extra_headers: dict[str, str] = field(default_factory=dict)
 
 
@@ -155,6 +160,19 @@ class FristaClient:
             {"Accept": "*/*", "User-Agent": USER_AGENT, **config.extra_headers}
         )
         self._login_lock = threading.Lock()
+        self._local = threading.local()   # batas waktu per thread (lihat _budget)
+
+    @contextmanager
+    def _budget(self):
+        """Semua request BPJS di dalam blok ini berbagi satu batas waktu total."""
+        outer = getattr(self._local, "deadline", None)
+        if outer is None:
+            self._local.deadline = time.monotonic() + self.cfg.request_budget
+        try:
+            yield
+        finally:
+            if outer is None:
+                self._local.deadline = None
 
     # ------------------------------------------------------------------ HTTP
     def _request(
@@ -168,6 +186,15 @@ class FristaClient:
         files: Any = None,
     ) -> tuple[int, Any]:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
+        timeout = self.cfg.timeout
+        deadline = getattr(self._local, "deadline", None)
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left < 1:
+                log.warning("FRISTA %s %s dilewati: batas waktu total habis", method, path)
+                raise FristaUnreachable("batas waktu total habis")
+            timeout = min(timeout, left)
+        started = time.monotonic()
         try:
             resp = self.http.request(
                 method,
@@ -176,17 +203,19 @@ class FristaClient:
                 json=json,
                 data=data,
                 files=files,
-                timeout=self.cfg.timeout,
+                timeout=timeout,
                 verify=self.cfg.verify_ssl,
             )
         except requests.RequestException as exc:
-            log.warning("FRISTA %s %s gagal: %s", method, path, exc)
+            log.warning("FRISTA %s %s gagal setelah %.1f detik: %s",
+                        method, path, time.monotonic() - started, exc)
             raise FristaUnreachable(str(exc)) from exc
         try:
             body = resp.json()
         except ValueError:
             body = None
-        log.debug("FRISTA %s %s -> %s", method, path, resp.status_code)
+        log.info("FRISTA %s %s -> HTTP %s (%.1f detik)",
+                 method, path, resp.status_code, time.monotonic() - started)
         return resp.status_code, body
 
     # ------------------------------------------------------------- Token
@@ -246,6 +275,10 @@ class FristaClient:
     # ---------------------------------------------------------- Endpoint
     def verify(self, member_id: str, encoding: Sequence[float]) -> dict:
         """Verifikasi wajah peserta (NIK 16 digit / no. kartu 13 digit)."""
+        with self._budget():
+            return self._verify(member_id, encoding)
+
+    def _verify(self, member_id: str, encoding: Sequence[float]) -> dict:
         if not validate_id(member_id):
             return _result(S.INVALID_ID, "Nomor identitas harus 13 atau 16 digit angka")
         enc = validate_encoding(encoding)
@@ -273,6 +306,11 @@ class FristaClient:
             if data:
                 result["data"] = data
         return result
+
+    def fill_nokartu(self, member_id: str, data: dict) -> None:
+        """Lengkapi nokartu yang tersamar/kosong lewat nik2 (dipakai ulang oleh APM)."""
+        with self._budget():
+            self._fill_nokartu(member_id, data, force=True)
 
     def _fill_nokartu(self, member_id: str, data: dict, force: bool = False) -> None:
         """match2 mengembalikan nokartu tersamar (000*******322); lengkapi untuk SEP."""

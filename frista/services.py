@@ -35,6 +35,7 @@ def get_client() -> FristaClient:
                 version=cfg["VERSION"],
                 verify_ssl=cfg["VERIFY_SSL"],
                 timeout=cfg["TIMEOUT"],
+                request_budget=cfg["REQUEST_BUDGET"],
             ),
             store=DjangoCacheTokenStore(),
         )

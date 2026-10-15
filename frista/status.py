@@ -22,5 +22,6 @@ class StatusCode:
 
     # Status yang berarti peserta lolos verifikasi
     PASSED = (OK, ALREADY_REGISTERED)
-    # Status yang boleh dicoba ulang dengan foto baru
-    RETRYABLE = (FACE_MISMATCH, FACE_UNPROCESSABLE, DUPLICATE_PHOTO)
+    # Status yang boleh dicoba ulang dengan foto baru (BPJS lambat/timeout juga boleh
+    # dicoba lagi; kalau match2 ternyata sudah berhasil, BPJS menjawab ALREADY_REGISTERED)
+    RETRYABLE = (FACE_MISMATCH, FACE_UNPROCESSABLE, DUPLICATE_PHOTO, SERVER_UNREACHABLE)

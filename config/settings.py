@@ -101,6 +101,8 @@ FRISTA = {
     "VERSION": env("FRISTA_VERSION", "3.0.2"),
     "VERIFY_SSL": env_bool("FRISTA_VERIFY_SSL", True),
     "TIMEOUT": float(env("FRISTA_TIMEOUT", "30")),
+    # Batas total satu verifikasi; harus di bawah timeout gunicorn & proxy (60 detik)
+    "REQUEST_BUDGET": float(env("FRISTA_REQUEST_BUDGET", "45")),
 }
 
 # Kunci untuk APM (boleh ada di APK; hanya bisa membuat sesi & membaca hasil)
