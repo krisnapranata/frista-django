@@ -105,13 +105,30 @@ ADMIN_API_KEY = env("ADMIN_API_KEY", "")
 
 CAPTURE_SESSION_TTL = int(env("CAPTURE_SESSION_TTL", "180"))   # detik
 FRISTA_MAX_ATTEMPTS = int(env("FRISTA_MAX_ATTEMPTS", "3"))
+# Halaman kamera: "manual" = tombol Ambil Gambar (seperti aplikasi FRISTA Windows),
+# "auto" = foto diambil otomatis saat wajah terdeteksi stabil.
+CAPTURE_MODE = env("CAPTURE_MODE", "manual")
+# Kamera yang dibuka pertama kali: "environment" (belakang) atau "user" (depan)
+CAPTURE_CAMERA = env("CAPTURE_CAMERA", "environment")
 
 # face-api.js 0.22.2 (MIT) dan model wajahnya sudah disertakan di static/faceapi,
 # jadi APM tidak bergantung pada CDN/internet untuk deteksi wajah.
 FACEAPI_SCRIPT_URL = env("FACEAPI_SCRIPT_URL", STATIC_URL + "faceapi/face-api.min.js")
 FACEAPI_MODEL_URL = env("FACEAPI_MODEL_URL", STATIC_URL + "faceapi/models")
 FACEAPI_MIN_SCORE = float(env("FACEAPI_MIN_SCORE", "0.85"))
+# Detektor wajah: "tiny" (model 190 KB, cepat di tablet) atau "ssd" (5,6 MB, lebih berat)
+FACEAPI_DETECTOR = env("FACEAPI_DETECTOR", "tiny")
 FACEAPI_STABLE_FRAMES = int(env("FACEAPI_STABLE_FRAMES", "3"))
+
+
+def _static_cache_headers(headers, path, url):
+    # Model face-api (~12 MB) tidak pernah berubah untuk versi yang sama: simpan lama
+    # di cache tablet supaya halaman kamera tidak memuat/menanyakan ulang ke server.
+    if url.startswith(STATIC_URL + "faceapi/"):
+        headers["Cache-Control"] = "public, max-age=31536000, immutable"
+
+
+WHITENOISE_ADD_HEADERS_FUNCTION = _static_cache_headers
 
 LOGGING = {
     "version": 1,

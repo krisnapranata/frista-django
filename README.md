@@ -264,8 +264,19 @@ curl -X POST https://frista.domain-anda.id/api/sessions \
   -d '{"member_id":"<NIK 16 digit>"}'
 ```
 
-`capture_url` di respons harus diawali `https://`. Buka link itu di HP/tablet, izinkan kamera,
-lalu hadapkan wajah. Kalau perangkat punya lebih dari satu kamera, ada tombol **Ganti Kamera**.
+`capture_url` di respons harus diawali `https://`. Buka link itu di HP/tablet dan izinkan kamera.
+Kamera **belakang** langsung terbuka. Arahkan ke wajah peserta lalu tekan **Ambil Gambar**,
+seperti di aplikasi FRISTA Windows. Kalau perangkat punya lebih dari satu kamera, ada tombol **Ganti Kamera**.
+
+Perilaku ini bisa diubah lewat `.env`:
+
+| Variabel | Default | Pilihan |
+|---|---|---|
+| `CAPTURE_MODE` | `manual` | `manual` = tombol Ambil Gambar, `auto` = foto diambil otomatis saat wajah stabil |
+| `CAPTURE_CAMERA` | `environment` | `environment` = kamera belakang, `user` = kamera depan |
+| `FACEAPI_DETECTOR` | `tiny` | `tiny` = detektor ringan 190 KB (cepat di tablet), `ssd` = detektor lama 5,6 MB |
+
+Untuk satu perangkat saja, tambahkan `&mode=auto` atau `&cam=user` di belakang `capture_url`.
 
 ### 9. Update ke versi terbaru
 

@@ -167,7 +167,10 @@ def capture(request):
             "modelUrl": settings.FACEAPI_MODEL_URL,
             "maxAttempts": settings.FRISTA_MAX_ATTEMPTS,
             "minScore": settings.FACEAPI_MIN_SCORE,
+            "detector": settings.FACEAPI_DETECTOR,
             "stableFrames": settings.FACEAPI_STABLE_FRAMES,
+            "mode": settings.CAPTURE_MODE,
+            "camera": settings.CAPTURE_CAMERA,
         },
         "faceapi_script": settings.FACEAPI_SCRIPT_URL,
     }

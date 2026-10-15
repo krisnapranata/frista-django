@@ -25,7 +25,7 @@
   video.mirror, canvas.mirror { transform: scaleX(-1); }
   video { background: #000; }
   /* Gambar terakhir kamera lama, ditahan selama kamera berganti */
-  #freeze { filter: blur(6px) brightness(.7); }
+  #freeze.blur { filter: blur(6px) brightness(.7); }
   .guide { position: absolute; inset: 12% 16%; border: 4px dashed rgba(255,255,255,.55);
     border-radius: 50%; transition: border-color .2s; pointer-events: none; }
   .guide.ready { border-style: solid; border-color: var(--ok); }
@@ -43,6 +43,9 @@
     background: var(--accent); color: #fff; }
   button.secondary { background: var(--panel); border: 1px solid rgba(255,255,255,.25); }
   button:disabled { opacity: .5; }
+  /* Tombol utama mode manual: besar, mudah ditekan petugas di tablet */
+  button.capture { font-size: 22px; font-weight: 600; padding: 18px 44px; border-radius: 999px;
+    background: var(--ok); min-width: min(80vw, 320px); }
   .actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .hidden { display: none !important; }
 </style>
@@ -60,7 +63,7 @@
   </script>
 {% else %}
   <h1>Verifikasi Wajah Peserta JKN</h1>
-  <p class="sub">Peserta: {{ member_id_masked }} &middot; Lepas masker/kacamata gelap, posisikan wajah di dalam lingkaran</p>
+  <p class="sub" id="sub">Peserta: {{ member_id_masked }} &middot; Lepas masker/kacamata gelap, posisikan wajah di dalam lingkaran</p>
 
   <div class="stage" id="stage">
     <!-- poster transparan: tanpa ini WebView Android menampilkan ikon putar/loading saat video belum punya gambar -->
@@ -73,6 +76,7 @@
   <div class="status" id="status"><span class="spinner"></span><span id="statusText">Menyiapkan kamera…</span></div>
   <div class="attempts" id="attempts"></div>
   <div class="actions">
+    <button id="captureBtn" class="capture hidden" type="button" disabled>Ambil Gambar</button>
     <button id="switchBtn" class="secondary hidden" type="button">Ganti Kamera</button>
     <button id="retryBtn" class="hidden" type="button">Coba lagi</button>
   </div>
@@ -92,23 +96,29 @@
     var attemptsEl = document.getElementById("attempts");
     var retryBtn = document.getElementById("retryBtn");
     var switchBtn = document.getElementById("switchBtn");
+    var captureBtn = document.getElementById("captureBtn");
     var freeze = document.getElementById("freeze");
 
     var stream = null, running = false, busy = false, stable = 0, finished = false, switching = false;
 
-    // Kamera: "user" (depan) atau "environment" (belakang). Urutan prioritas:
-    // ?cam= di URL, pilihan terakhir di perangkat ini, lalu default depan.
-    // Kamera terakhir juga diingat lewat deviceId, karena sebagian kamera USB/tablet
-    // tidak melaporkan facingMode sehingga depan/belakang tidak bisa dipilih lewat itu.
-    var CAM_KEY = "frista_cam", CAM_ID_KEY = "frista_cam_id";
-    var camParam = new URLSearchParams(location.search).get("cam");
-    var facing = (function () {
-      if (camParam === "user" || camParam === "environment") return camParam;
-      try { var s = localStorage.getItem(CAM_KEY); if (s === "user" || s === "environment") return s; } catch (e) {}
-      return "user";
-    })();
+    // Mode: "manual" (tombol Ambil Gambar, seperti FRISTA Windows) atau "auto".
+    // ?mode= di URL mengalahkan pengaturan server (CAPTURE_MODE).
+    var params = new URLSearchParams(location.search);
+    var modeParam = params.get("mode");
+    var MANUAL = (modeParam === "auto" || modeParam === "manual" ? modeParam : CFG.mode) !== "auto";
+
+    // Kamera: "environment" (belakang) atau "user" (depan). ?cam= di URL mengalahkan
+    // pengaturan server (CAPTURE_CAMERA). Tidak mengingat pilihan sebelumnya, supaya
+    // setiap sesi APM selalu dimulai dengan kamera yang sama.
+    var camParam = params.get("cam");
+    var facing = (camParam === "user" || camParam === "environment") ? camParam
+               : (CFG.camera === "user" ? "user" : "environment");
     var deviceId = null;
-    if (!camParam) { try { deviceId = localStorage.getItem(CAM_ID_KEY); } catch (e) {} }
+
+    if (MANUAL) {
+      document.getElementById("sub").innerHTML =
+        "Peserta: {{ member_id_masked|escapejs }} &middot; Arahkan kamera ke wajah peserta, lalu tekan <b>Ambil Gambar</b>";
+    }
 
     function setStatus(text, kind, spin) {
       statusText.textContent = text;
@@ -132,6 +142,7 @@
       running = false;
       stopStream();
       switchBtn.classList.add("hidden");
+      captureBtn.classList.add("hidden");
     }
 
     function videoConstraints(id) {
@@ -141,17 +152,43 @@
       return { video: v, audio: false };
     }
 
-    async function openCamera(id) {
-      stopStream();
+    async function getStream(id) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia(videoConstraints(id));
+        return await navigator.mediaDevices.getUserMedia(videoConstraints(id));
       } catch (e) {
         if (!id) throw e;
-        // Kamera yang diingat sudah tidak ada (mis. dicabut): pakai facingMode
-        stream = await navigator.mediaDevices.getUserMedia(videoConstraints(null));
+        // Kamera yang dipilih sudah tidak ada (mis. dicabut): pakai facingMode
+        return await navigator.mediaDevices.getUserMedia(videoConstraints(null));
       }
-      var track = stream.getVideoTracks()[0];
-      var settings = track.getSettings ? track.getSettings() : {};
+    }
+
+    function trackSettings() {
+      var t = stream && stream.getVideoTracks()[0];
+      return t && t.getSettings ? t.getSettings() : {};
+    }
+
+    // Sebagian tablet/kamera USB tidak melaporkan facingMode, sehingga facingMode
+    // "environment" bisa membuka kamera depan. Cari kamera yang diminta lewat namanya.
+    var LABEL = { environment: /back|rear|belakang|environment|world/i, user: /front|depan|user|facetime|selfie/i };
+    async function findByLabel(want) {
+      var hit = (await listCameras()).find(function (c) { return LABEL[want].test(c.label || ""); });
+      return hit ? hit.deviceId : null;
+    }
+
+    async function openCamera(id) {
+      var want = facing;
+      stopStream();
+      stream = await getStream(id);
+      var settings = trackSettings();
+      if (!id && settings.facingMode !== want) {
+        var match = await findByLabel(want);
+        if (match && match !== settings.deviceId) {
+          stopStream();
+          stream = await getStream(match);
+          settings = trackSettings();
+          if (!settings.facingMode) settings.facingMode = want;   // dipilih lewat nama kamera
+        }
+      }
       if (settings.facingMode === "user" || settings.facingMode === "environment") facing = settings.facingMode;
       deviceId = settings.deviceId || id || null;
       video.classList.toggle("mirror", facing !== "environment");
@@ -171,13 +208,15 @@
       });
     }
 
-    // Bekukan gambar terakhir supaya layar tidak hitam/berkedip selama kamera berganti
-    function holdFrame() {
-      if (!video.videoWidth) return;
+    // Bekukan gambar terakhir: buram selama kamera berganti, tajam sebagai foto yang diambil
+    function holdFrame(blur) {
+      if (!video.videoWidth) return false;
       freeze.width = video.videoWidth; freeze.height = video.videoHeight;
       freeze.getContext("2d").drawImage(video, 0, 0);
       freeze.classList.toggle("mirror", video.classList.contains("mirror"));
+      freeze.classList.toggle("blur", !!blur);
       freeze.classList.remove("hidden");
+      return true;
     }
     function releaseFrame() { freeze.classList.add("hidden"); }
 
@@ -189,25 +228,24 @@
     }
 
     async function showSwitchIfAvailable() {
-      if ((await listCameras()).length > 1) switchBtn.classList.remove("hidden");
+      if ((await listCameras()).length > 1 && !finished) switchBtn.classList.remove("hidden");
     }
 
     async function switchCamera() {
       if (switching || busy || finished) return;
-      switching = true; switchBtn.disabled = true; stable = 0;
+      switching = true; switchBtn.disabled = true; captureBtn.disabled = true; stable = 0;
       guide.classList.remove("ready");
       var prevId = deviceId, prevFacing = facing;
       var cams = await listCameras();
       var idx = cams.findIndex(function (c) { return c.deviceId === deviceId; });
       var next = cams[(idx + 1) % cams.length];
       facing = facing === "user" ? "environment" : "user";   // dikoreksi oleh getSettings bila tersedia
-      holdFrame();
+      holdFrame(true);
       try {
         setStatus("Mengganti kamera…", "", true);
         await openCamera(next ? next.deviceId : null);
-        try { localStorage.setItem(CAM_KEY, facing); localStorage.setItem(CAM_ID_KEY, deviceId || ""); } catch (e) {}
         lastHint = "";
-        setStatus("Lihat ke kamera dan diam sejenak…", "", true);
+        readyStatus();
       } catch (e) {
         // Kembali ke kamera sebelumnya kalau kamera yang dipilih gagal dibuka
         facing = prevFacing;
@@ -215,7 +253,12 @@
         setStatus("Kamera lain tidak dapat dibuka", "warn", false);
       }
       releaseFrame();
-      switching = false; switchBtn.disabled = false;
+      switching = false; switchBtn.disabled = false; captureBtn.disabled = false;
+    }
+
+    function readyStatus() {
+      if (MANUAL) setStatus("Arahkan kamera ke wajah peserta, lalu tekan Ambil Gambar", "", false);
+      else setStatus("Lihat ke kamera dan diam sejenak…", "", true);
     }
 
     function finish(result, text, kind) {
@@ -232,25 +275,200 @@
         return;
       }
       try {
-        setStatus("Memuat model pengenalan wajah…", "", true);
-        await faceapi.nets.ssdMobilenetv1.loadFromUri(CFG.modelUrl);
-        await faceapi.nets.faceLandmark68Net.loadFromUri(CFG.modelUrl);
-        await faceapi.nets.faceRecognitionNet.loadFromUri(CFG.modelUrl);
-
+        // Kamera dulu, baru model: di tablet yang lemah, memuat model bersamaan dengan
+        // membuka kamera membuat pratinjau hitam sampai model selesai dimuat.
         setStatus("Membuka kamera…", "", true);
-        await openCamera(deviceId);
-        showSwitchIfAvailable();
-        startLoop();
+        await openCamera(null);
       } catch (e) {
         finish({ status: "CAMERA_ERROR", message: String(e && e.message || e), final: true },
                "Gagal membuka kamera: " + (e && e.message || e), "err");
+        return;
+      }
+      showSwitchIfAvailable();
+      try {
+        setStatus("Memuat model pengenalan wajah…", "", true);
+        await loadModels();
+        setStatus("Menyiapkan pembaca wajah…", "", true);
+        await warmUp();
+        if (MANUAL) { captureBtn.classList.remove("hidden"); captureBtn.disabled = false; readyStatus(); }
+        else startLoop();
+      } catch (e) {
+        finish({ status: "MODEL_ERROR", message: "Gagal memuat model wajah: " + (e && e.message || e), final: true },
+               "Gagal memuat model wajah. Periksa koneksi ke server.", "err");
       }
     }
 
+    // ---------- model face-api ----------
+    // Detektor "tiny" (190 KB) jauh lebih ringan daripada "ssd" (5,6 MB). Encoding wajah
+    // tetap dihitung oleh model landmark + recognition yang sama, hanya cara mencari
+    // letak wajahnya yang berbeda.
+    var TINY = CFG.detector !== "ssd";
+    var DETECTOR = TINY
+      ? { net: faceapi.nets.tinyFaceDetector, file: "tiny_face_detector_model" }
+      : { net: faceapi.nets.ssdMobilenetv1, file: "ssd_mobilenetv1_model" };
+    // Skor detektor tiny umumnya lebih rendah daripada ssd untuk wajah yang sama
+    var MIN_SCORE = TINY ? Math.min(CFG.minScore, 0.6) : CFG.minScore;
+
+    function detectorOptions() {
+      return TINY ? new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })
+                  : new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 });
+    }
+
+    // Model diunduh sendiri (bukan loadFromUri) supaya kemajuan unduhan bisa ditampilkan.
+    // Header cache panjang dari server membuat unduhan berikutnya diambil dari cache tablet.
+    var loaded = {}, sizes = {};
+    function showProgress() {
+      var got = 0, total = 0, known = true, k;
+      for (k in loaded) { got += loaded[k]; if (sizes[k]) total += sizes[k]; else known = false; }
+      var mb = function (b) { return (b / 1048576).toFixed(1).replace(".", ","); };
+      setStatus("Memuat model pengenalan wajah… " + mb(got) + (known && total ? " / " + mb(total) : "") + " MB", "", true);
+    }
+
+    async function fetchBytes(url) {
+      var res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status + " " + url);
+      sizes[url] = +res.headers.get("Content-Length") || 0;
+      loaded[url] = 0;
+      if (!res.body || !res.body.getReader) {
+        var all = new Uint8Array(await res.arrayBuffer());
+        loaded[url] = all.length; showProgress();
+        return all;
+      }
+      var reader = res.body.getReader(), chunks = [], n = 0;
+      for (;;) {
+        var r = await reader.read();
+        if (r.done) break;
+        chunks.push(r.value); n += r.value.length;
+        loaded[url] = n; showProgress();
+      }
+      var out = new Uint8Array(n), off = 0;
+      chunks.forEach(function (c) { out.set(c, off); off += c.length; });
+      return out;
+    }
+
+    async function loadNet(net, file) {
+      var base = CFG.modelUrl.replace(/\/$/, "") + "/";
+      var res = await fetch(base + file + "-weights_manifest.json");
+      if (!res.ok) throw new Error("HTTP " + res.status + " " + file);
+      var manifest = await res.json(), map = {};
+      await Promise.all(manifest.map(async function (group) {
+        var parts = await Promise.all(group.paths.map(function (p) { return fetchBytes(base + p); }));
+        var len = parts.reduce(function (a, p) { return a + p.length; }, 0);
+        var buf = new Uint8Array(len), off = 0;
+        parts.forEach(function (p) { buf.set(p, off); off += p.length; });
+        Object.assign(map, faceapi.tf.io.decodeWeights(buf.buffer, group.weights));
+      }));
+      net.loadFromWeightMap(map);
+    }
+
+    function loadModels() {
+      return Promise.all([
+        loadNet(DETECTOR.net, DETECTOR.file),
+        loadNet(faceapi.nets.faceLandmark68Net, "face_landmark_68_model"),
+        loadNet(faceapi.nets.faceRecognitionNet, "face_recognition_model")
+      ]);
+    }
+
+    // Pemakaian model yang pertama kali jauh lebih lambat (WebGL menyusun shader).
+    // Jalankan sekali di gambar kosong supaya tombol Ambil Gambar langsung cepat.
+    async function warmUp() {
+      var c = document.createElement("canvas");
+      c.width = c.height = 150;
+      c.getContext("2d").fillRect(0, 0, 150, 150);
+      try {
+        await faceapi.detectSingleFace(c, detectorOptions());
+        await faceapi.nets.faceLandmark68Net.detectLandmarks(c);
+        await faceapi.nets.faceRecognitionNet.computeFaceDescriptor(c);
+      } catch (e) {}
+    }
+
+    // ---------- mode manual: tombol Ambil Gambar ----------
+    // Satu tekanan mengambil beberapa frame berturut-turut (burst), lalu memakai frame
+    // yang paling tajam. Ini menolong pasien yang wajahnya sulit diam (gambar tidak blur).
+    var BURST_FRAMES = 5, BURST_GAP_MS = 70, BURST_TRY = 2;
+
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+    function grabFrame() {
+      var c = document.createElement("canvas");
+      c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext("2d").drawImage(video, 0, 0);
+      return c;
+    }
+
+    // Ketajaman = varian Laplacian di bagian tengah gambar (tempat wajah), diperkecil
+    // ke 128 px supaya cepat. Gambar yang blur karena gerakan nilainya kecil.
+    var sharpCanvas = document.createElement("canvas");
+    function sharpness(c) {
+      var n = 128, side = Math.min(c.width, c.height) * 0.6;
+      sharpCanvas.width = sharpCanvas.height = n;
+      var ctx = sharpCanvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(c, (c.width - side) / 2, (c.height - side) / 2, side, side, 0, 0, n, n);
+      var d = ctx.getImageData(0, 0, n, n).data, g = new Float32Array(n * n), i, x, y;
+      for (i = 0; i < n * n; i++) g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+      var sum = 0, sq = 0, cnt = 0;
+      for (y = 1; y < n - 1; y++) for (x = 1; x < n - 1; x++) {
+        i = y * n + x;
+        var l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - n] - g[i + n];
+        sum += l; sq += l * l; cnt++;
+      }
+      var mean = sum / cnt;
+      return sq / cnt - mean * mean;
+    }
+
+    function showFrame(c) {
+      freeze.width = c.width; freeze.height = c.height;
+      freeze.getContext("2d").drawImage(c, 0, 0);
+    }
+
+    async function capture() {
+      if (busy || switching || finished || !holdFrame(false)) return;
+      busy = true; captureBtn.disabled = true; switchBtn.disabled = true;
+      setStatus("Mengambil gambar…", "", true);
+
+      var frames = [];
+      for (var k = 0; k < BURST_FRAMES; k++) {
+        if (k) await wait(BURST_GAP_MS);
+        var c = grabFrame();
+        frames.push({ canvas: c, sharp: sharpness(c) });
+      }
+      frames.sort(function (a, b) { return b.sharp - a.sharp; });
+
+      setStatus("Memeriksa wajah…", "", true);
+      var det = null, problem = "";
+      for (var t = 0; t < Math.min(BURST_TRY, frames.length); t++) {
+        var f = frames[t].canvas;
+        try {
+          det = await faceapi.detectSingleFace(f, detectorOptions()).withFaceLandmarks().withFaceDescriptor();
+        } catch (e) { det = null; }
+        problem = !det ? "Wajah tidak terdeteksi. Arahkan kamera ke wajah peserta lalu ambil ulang."
+                       : faceProblem(det.detection, f.width, f.height);
+        if (!problem) { showFrame(f); break; }
+      }
+      frames = null;
+      if (problem) {
+        busy = false;
+        setStatus(problem, "warn", false);
+        resumePreview();
+        return;
+      }
+      guide.classList.add("ready");
+      await send(det.descriptor);
+    }
+
+    // Kembali ke pratinjau kamera agar petugas bisa mengambil gambar lagi
+    function resumePreview() {
+      if (finished) return;
+      releaseFrame();
+      guide.classList.remove("ready");
+      captureBtn.disabled = false; switchBtn.disabled = false;
+    }
+
+    // ---------- mode otomatis ----------
     function startLoop() {
       running = true; stable = 0;
       retryBtn.classList.add("hidden");
-      setStatus("Lihat ke kamera dan diam sejenak…", "", true);
+      readyStatus();
       loop();
     }
 
@@ -258,14 +476,17 @@
       if (!running || finished) return;
       if (!busy && !switching) {
         try {
-          var det = await faceapi
-            .detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 }))
-            .withFaceLandmarks()
-            .withFaceDescriptor();
+          // Tiap frame hanya deteksi (ringan); landmark + descriptor (berat) dihitung
+          // sekali saja setelah wajah stabil
+          var det = await faceapi.detectSingleFace(video, detectorOptions());
           if (det && goodFrame(det)) {
             stable++;
             guide.classList.add("ready");
-            if (stable >= CFG.stableFrames) { await send(det.descriptor); }
+            if (stable >= CFG.stableFrames) {
+              var full = await faceapi.detectSingleFace(video, detectorOptions()).withFaceLandmarks().withFaceDescriptor();
+              if (full && !faceProblem(full.detection, video.videoWidth, video.videoHeight)) await send(full.descriptor);
+              else stable = 0;
+            }
           } else {
             stable = 0;
             guide.classList.remove("ready");
@@ -275,15 +496,20 @@
       if (running && !finished) setTimeout(loop, 250);
     }
 
-    // Wajah cukup besar, cukup jelas, dan berada di tengah
-    function goodFrame(det) {
-      var box = det.detection.box, vw = video.videoWidth, vh = video.videoHeight;
-      if (det.detection.score < CFG.minScore) { hint("Wajah kurang jelas, pastikan cahaya cukup"); return false; }
-      if (box.width < vw * 0.22) { hint("Mendekatlah ke kamera"); return false; }
+    // Wajah cukup besar, cukup jelas, dan berada di tengah. Mengembalikan pesan bila tidak.
+    // det = FaceDetection (punya box dan score)
+    function faceProblem(det, vw, vh) {
+      var box = det.box;
+      if (det.score < MIN_SCORE) return "Wajah kurang jelas, pastikan cahaya cukup";
+      if (box.width < vw * 0.22) return "Wajah terlalu kecil, dekatkan kamera ke wajah";
       var cx = (box.x + box.width / 2) / vw, cy = (box.y + box.height / 2) / vh;
-      if (Math.abs(cx - 0.5) > 0.2 || Math.abs(cy - 0.5) > 0.22) { hint("Posisikan wajah di tengah lingkaran"); return false; }
-      hint("Tahan posisi…");
-      return true;
+      if (Math.abs(cx - 0.5) > 0.2 || Math.abs(cy - 0.5) > 0.22) return "Posisikan wajah di tengah lingkaran";
+      return "";
+    }
+    function goodFrame(det) {
+      var p = faceProblem(det, video.videoWidth, video.videoHeight);
+      hint(p || "Tahan posisi…");
+      return !p;
     }
     var lastHint = "";
     function hint(t) { if (t !== lastHint && !busy) { lastHint = t; setStatus(t, "", true); } }
@@ -320,6 +546,11 @@
         case "DUPLICATE_PHOTO":
         case "NETWORK_ERROR":
           if (r.final) { finish(r, "Verifikasi gagal. Silakan ke loket petugas.", "err"); }
+          else if (MANUAL) {
+            setStatus((r.message || "Wajah tidak cocok") + ". Tekan Ambil Ulang.", "warn", false);
+            resumePreview();
+            captureBtn.textContent = "Ambil Ulang";
+          }
           else { setStatus(r.message || "Wajah tidak cocok, coba lagi", "warn", false); retryBtn.classList.remove("hidden"); setTimeout(function () { if (!finished && !running) startLoop(); }, 2500); }
           break;
         default:
@@ -329,6 +560,7 @@
 
     retryBtn.addEventListener("click", function () { if (!finished && !running) startLoop(); });
     switchBtn.addEventListener("click", switchCamera);
+    captureBtn.addEventListener("click", capture);
     window.addEventListener("pagehide", stopCamera);
 
     {% if already_done %}
