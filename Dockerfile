@@ -29,4 +29,4 @@ EXPOSE 8010
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import os,urllib.request as u;u.urlopen(u.Request('http://127.0.0.1:%s/health' % os.environ['PORT'], headers={'Host': 'localhost'}), timeout=4)" || exit 1
 
-CMD ["sh", "-c", "exec gunicorn config.wsgi -b 0.0.0.0:${PORT} -w ${GUNICORN_WORKERS} --timeout 60 --access-logfile -"]
+CMD ["sh", "-c", "exec gunicorn config.wsgi -b 0.0.0.0:${PORT} -w ${GUNICORN_WORKERS} --timeout 60 --no-control-socket --access-logfile -"]
